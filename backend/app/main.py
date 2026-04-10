@@ -83,21 +83,23 @@ def list_sources() -> dict:
 @app.post("/api/realtime/topic", response_model=TopicResult)
 def run_topic(payload: TopicRequest) -> TopicResult:
     try:
-        result = orchestrator.run(topic=payload.topic, max_items=payload.max_items)
+        result = orchestrator.run(topic=payload.topic, max_items=payload.max_items, city=payload.city)
         meta = result.meta or {}
         mode = str(meta.get("mode", "unknown"))
         if mode in {"gemini", "ollama"}:
             logger.info(
-                "topic analysis success topic=%s alerts=%d mode=%s model=%s",
+                "topic analysis success topic=%s city=%s alerts=%d mode=%s model=%s",
                 payload.topic,
+                payload.city,
                 len(result.alerts),
                 mode,
                 meta.get("model", "n/a"),
             )
         else:
             logger.warning(
-                "topic analysis fallback topic=%s alerts=%d mode=%s reason=%s",
+                "topic analysis fallback topic=%s city=%s alerts=%d mode=%s reason=%s",
                 payload.topic,
+                payload.city,
                 len(result.alerts),
                 mode,
                 meta.get("reason", "n/a"),
@@ -112,25 +114,28 @@ def run_topic(payload: TopicRequest) -> TopicResult:
 def stream_topic(
     topic: str = Query(..., min_length=2, max_length=240),
     max_items: int = Query(20, ge=5, le=100),
+    city: str | None = Query(None, min_length=3, max_length=32),
 ):
     def event_stream():
-        logger.info("stream started topic=%s max_items=%s", topic, max_items)
+        logger.info("stream started topic=%s city=%s max_items=%s", topic, city, max_items)
         try:
-            for event_name, payload in orchestrator.stream(topic=topic, max_items=max_items):
+            for event_name, payload in orchestrator.stream(topic=topic, max_items=max_items, city=city):
                 if event_name == "result":
                     meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
                     mode = str(meta.get("mode", "unknown")) if isinstance(meta, dict) else "unknown"
                     if mode in {"gemini", "ollama"}:
                         logger.info(
-                            "stream result success topic=%s mode=%s model=%s",
+                            "stream result success topic=%s city=%s mode=%s model=%s",
                             topic,
+                            city,
                             mode,
                             (meta.get("model", "n/a") if isinstance(meta, dict) else "n/a"),
                         )
                     else:
                         logger.warning(
-                            "stream result fallback topic=%s mode=%s reason=%s",
+                            "stream result fallback topic=%s city=%s mode=%s reason=%s",
                             topic,
+                            city,
                             mode,
                             (meta.get("reason", "n/a") if isinstance(meta, dict) else "n/a"),
                         )
@@ -138,7 +143,7 @@ def stream_topic(
                 yield f"event: {event_name}\n"
                 yield f"data: {body}\n\n"
         except Exception as exc:
-            logger.exception("stream failed topic=%s max_items=%s", topic, max_items)
+            logger.exception("stream failed topic=%s city=%s max_items=%s", topic, city, max_items)
             body = json.dumps({"error": str(exc)}, ensure_ascii=True)
             yield "event: error\n"
             yield f"data: {body}\n\n"

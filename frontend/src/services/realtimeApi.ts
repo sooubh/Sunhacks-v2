@@ -1,4 +1,5 @@
 import type { Alert, AlertStatus, EventCategory, PipelineStage, RiskLevel, Sentiment } from '../types';
+import type { CityScope } from '../config/cities';
 
 const API_BASE = (import.meta.env.VITE_BACKEND_URL as string | undefined)?.trim() || 'http://127.0.0.1:8000';
 
@@ -183,14 +184,14 @@ export function mapRunResult(payload: BackendResult): UIRunResult {
   };
 }
 
-export async function runTopic(topic: string, maxItems = 20): Promise<UIRunResult> {
+export async function runTopic(topic: string, maxItems = 20, city?: CityScope): Promise<UIRunResult> {
   const requestUrl = `${API_BASE}/api/realtime/topic`;
-  logDebugReport('runTopic.request', { topic, maxItems, requestUrl });
+  logDebugReport('runTopic.request', { topic, maxItems, city, requestUrl });
 
   const response = await fetch(`${API_BASE}/api/realtime/topic`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ topic, max_items: maxItems }),
+    body: JSON.stringify({ topic, max_items: maxItems, city }),
   });
 
   if (!response.ok) {
@@ -236,12 +237,14 @@ export type StreamHandlers = {
   onError?: (error: string) => void;
 };
 
-export function streamTopic(topic: string, maxItems: number, handlers: StreamHandlers): () => void {
+export function streamTopic(topic: string, maxItems: number, handlers: StreamHandlers, city?: CityScope): () => void {
   const params = new URLSearchParams({ topic, max_items: String(maxItems) });
+  if (city) params.set('city', city);
   const stream = new EventSource(`${API_BASE}/api/realtime/stream?${params.toString()}`);
   logDebugReport('streamTopic.open', {
     topic,
     maxItems,
+    city,
     streamUrl: `${API_BASE}/api/realtime/stream?${params.toString()}`,
   });
 

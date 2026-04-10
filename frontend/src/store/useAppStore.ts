@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import type { Alert, AlertStatus, DashboardStats, FilterType, PipelineStage, RiskLevel, AuditLog, User } from '../types';
 import { generateMockAlerts, generateMockAuditLogs, generateMockPipelineStages } from '../services/mockData';
 import { runTopic, streamTopic } from '../services/realtimeApi';
+import { CITY_OPTIONS, normalizeCityScope, type CityScope } from '../config/cities';
 
 type PipelineModelMode = 'unknown' | 'gemini' | 'fallback';
 
@@ -62,7 +63,14 @@ const initialLogs = generateMockAuditLogs(initialAlerts);
 
 function pickTopic(searchQuery: string, voiceQuery: string): string {
   const candidate = searchQuery.trim() || voiceQuery.trim();
-  return candidate || 'india public safety protest unrest law and order';
+  return candidate || 'public safety protest unrest law and order';
+}
+
+function buildCityTopic(baseTopic: string, city: CityScope): string {
+  const topic = baseTopic.trim();
+  if (!topic) return `${city} public safety law and order`;
+  if (topic.toLowerCase().includes(city.toLowerCase())) return topic;
+  return `${city} ${topic}`;
 }
 
 function mergeAlerts(current: Alert[], incoming: Alert[]): Alert[] {
@@ -145,7 +153,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   alerts: initialAlerts,
   activeFilter: 'ALL',
   searchQuery: '',
-  selectedCity: '',
+  selectedCity: CITY_OPTIONS[0],
   dashboardStats: computeStats(initialAlerts),
   isCollecting: false,
   pipelineStages: generateMockPipelineStages(),
@@ -198,10 +206,11 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
 
   triggerCollect: async () => {
     set({ isCollecting: true });
-    const topic = pickTopic(get().searchQuery, get().voiceQuery);
+    const city = normalizeCityScope(get().selectedCity) ?? CITY_OPTIONS[0];
+    const topic = buildCityTopic(pickTopic(get().searchQuery, get().voiceQuery), city);
 
     try {
-      const result = await runTopic(topic, 20);
+      const result = await runTopic(topic, 20, city);
       const mode = String(result.meta?.mode ?? 'unknown');
       if (mode === 'gemini') {
         console.info('[AI Debug] triggerCollect succeeded with Gemini mode', {
@@ -259,7 +268,8 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   },
 
   runPipeline: async () => {
-    const topic = pickTopic(get().searchQuery, get().voiceQuery);
+    const city = normalizeCityScope(get().selectedCity) ?? CITY_OPTIONS[0];
+    const topic = buildCityTopic(pickTopic(get().searchQuery, get().voiceQuery), city);
     set({
       isPipelineRunning: true,
       lastTopic: topic,
@@ -369,7 +379,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           close();
           finish();
         },
-      });
+      }, city);
     });
   },
 }), {

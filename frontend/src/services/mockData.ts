@@ -4,10 +4,11 @@ import { format, subHours, subMinutes } from 'date-fns';
 // ─── Static Data Pools ───────────────────────────────────────────────────────
 
 const LOCATIONS = [
-  'Mumbai, Maharashtra', 'New Delhi, Delhi', 'Pune, Maharashtra',
-  'Bengaluru, Karnataka', 'Hyderabad, Telangana', 'Ahmedabad, Gujarat',
-  'Chennai, Tamil Nadu', 'Kolkata, West Bengal', 'Lucknow, Uttar Pradesh',
-  'Jaipur, Rajasthan', 'Bhopal, Madhya Pradesh', 'Patna, Bihar',
+  'Mumbai, Maharashtra',
+  'Delhi, Delhi',
+  'Bangalore, Karnataka',
+  'Hyderabad, Telangana',
+  'Chennai, Tamil Nadu',
 ];
 
 const EVENTS: { title: string; category: EventCategory; keywords: string[]; sentiment: Sentiment }[] = [

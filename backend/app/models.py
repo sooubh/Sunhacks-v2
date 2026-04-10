@@ -5,10 +5,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .cities import CityName
+
 
 class TopicRequest(BaseModel):
     topic: str = Field(..., min_length=2, max_length=240)
     max_items: int = Field(default=20, ge=5, le=100)
+    city: CityName | None = None
 
 
 class SourceSignal(BaseModel):

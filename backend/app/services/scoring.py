@@ -74,20 +74,19 @@ TRUSTED_NEWS_DOMAINS = {
     "news18.com",
 }
 
-KNOWN_LOCATIONS = [
-    "mumbai",
-    "delhi",
-    "new delhi",
-    "pune",
-    "bengaluru",
-    "hyderabad",
-    "kolkata",
-    "chennai",
-    "ahmedabad",
-    "jaipur",
-    "lucknow",
-    "patna",
-]
+CITY_ALIASES = {
+    "mumbai": "Mumbai",
+    "bombay": "Mumbai",
+    "delhi": "Delhi",
+    "new delhi": "Delhi",
+    "ncr": "Delhi",
+    "bangalore": "Bangalore",
+    "bengaluru": "Bangalore",
+    "bengalore": "Bangalore",
+    "hyderabad": "Hyderabad",
+    "chennai": "Chennai",
+    "madras": "Chennai",
+}
 
 STOP_WORDS = {
     "the",
@@ -153,11 +152,18 @@ def infer_sentiment(text: str) -> Literal["PANIC", "AGGRESSION", "NEUTRAL", "TEN
     return "NEUTRAL"
 
 
-def infer_location(text: str) -> str:
+def infer_location(text: str, fallback_city: str | None = None) -> str:
     haystack = text.lower()
-    for city in KNOWN_LOCATIONS:
-        if city in haystack:
-            return city.title()
+
+    for alias in sorted(CITY_ALIASES.keys(), key=len, reverse=True):
+        if alias in haystack:
+            return CITY_ALIASES[alias]
+
+    if fallback_city:
+        clean_fallback = CITY_ALIASES.get(fallback_city.strip().lower())
+        if clean_fallback:
+            return clean_fallback
+
     return "Unknown"
 
 

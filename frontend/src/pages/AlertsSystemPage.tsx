@@ -3,6 +3,7 @@ import { format } from 'date-fns';
 import { useAppStore, getFilteredAlerts } from '../store/useAppStore';
 import type { FilterType } from '../types';
 import ExplainableAlertCard from '../components/ExplainableAlertCard';
+import { CITY_OPTIONS, getCityFromLocation, normalizeCityScope } from '../config/cities';
 
 const FILTERS: { label: string; key: FilterType; cls: string }[] = [
   { label: 'All Alerts',   key: 'ALL',      cls: '' },
@@ -17,10 +18,6 @@ const RISK_FILTERS = [
   { key: 'MEDIUM', label: 'MEDIUM', color: 'var(--risk-medium)' },
   { key: 'LOW',    label: 'LOW',    color: 'var(--risk-low)' },
 ];
-
-function getCityName(location: string): string {
-  return location.split(',')[0]?.trim() || location.trim();
-}
 
 function computeCityScopedStats(alerts: ReturnType<typeof getFilteredAlerts>) {
   const active = alerts.filter(a => a.status === 'ACTIVE');
@@ -51,47 +48,21 @@ export default function AlertsSystemPage() {
   } = useAppStore();
   const [riskOnly, setRiskOnly] = useState<string>('ALL');
 
-  const cityFrequency = useMemo(() => {
-    const map: Record<string, number> = {};
-    alerts.forEach((alert) => {
-      const city = getCityName(alert.location);
-      map[city] = (map[city] || 0) + 1;
-    });
-
-    return Object.entries(map)
-      .map(([city, count]) => ({ city, count }))
-      .sort((a, b) => b.count - a.count);
-  }, [alerts]);
-
-  const topCityOptions = useMemo(
-    () => cityFrequency.slice(0, 5).map((entry) => entry.city),
-    [cityFrequency],
-  );
-
-  const effectiveCity = topCityOptions.includes(selectedCity)
-    ? selectedCity
-    : (topCityOptions[0] ?? '');
+  const effectiveCity = normalizeCityScope(selectedCity) ?? CITY_OPTIONS[0];
 
   useEffect(() => {
-    if (!topCityOptions.length) {
-      if (selectedCity) setSelectedCity('');
-      return;
+    if (!normalizeCityScope(selectedCity)) {
+      setSelectedCity(CITY_OPTIONS[0]);
     }
-
-    if (!selectedCity || !topCityOptions.includes(selectedCity)) {
-      setSelectedCity(topCityOptions[0]);
-    }
-  }, [selectedCity, setSelectedCity, topCityOptions]);
+  }, [selectedCity, setSelectedCity]);
 
   const cityScopedAllAlerts = useMemo(
-    () => (effectiveCity ? alerts.filter(a => getCityName(a.location) === effectiveCity) : alerts),
+    () => alerts.filter(a => getCityFromLocation(a.location) === effectiveCity),
     [alerts, effectiveCity],
   );
 
   const filtered = getFilteredAlerts(alerts, activeFilter, searchQuery);
-  const cityScopedFiltered = effectiveCity
-    ? filtered.filter(a => getCityName(a.location) === effectiveCity)
-    : filtered;
+  const cityScopedFiltered = filtered.filter(a => getCityFromLocation(a.location) === effectiveCity);
   const display = riskOnly === 'ALL' ? cityScopedFiltered : cityScopedFiltered.filter(a => a.riskLevel === riskOnly);
 
   const cityStats = computeCityScopedStats(cityScopedAllAlerts);
@@ -203,7 +174,7 @@ export default function AlertsSystemPage() {
             value={effectiveCity}
             onChange={e => setSelectedCity(e.target.value)}
           >
-            {topCityOptions.map(city => (
+            {CITY_OPTIONS.map(city => (
               <option key={city} value={city}>{city}</option>
             ))}
           </select>
