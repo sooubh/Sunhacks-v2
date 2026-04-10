@@ -6,6 +6,11 @@ from typing import Iterable
 
 import requests
 
+try:
+    from langchain_community.llms import Ollama as LangChainOllama
+except Exception:
+    LangChainOllama = None
+
 from ..config import Settings
 from ..models import AlertOut
 
@@ -138,9 +143,31 @@ class CrewReporter:
             return None, {"reason": "ollama_disabled"}
         if not self.settings.ollama_base_url:
             return None, {"reason": "missing_ollama_base_url"}
+        if LangChainOllama is None:
+            logger.warning("LangChain Ollama client unavailable; skipping Ollama mode topic=%s", topic)
+            return None, {"reason": "langchain_ollama_missing"}
 
         model_errors: list[str] = []
         available_models = self._available_ollama_models()
+
+        # Requested Ollama model clients (external Ollama API via base_url).
+        llama = LangChainOllama(
+            model="llama3:8b",
+            base_url=self.settings.ollama_base_url,
+            temperature=0.2,
+            num_predict=450,
+        )
+        mistral = LangChainOllama(
+            model="mistral:7b",
+            base_url=self.settings.ollama_base_url,
+            temperature=0.2,
+            num_predict=450,
+        )
+        predefined_clients = {
+            "llama3:8b": llama,
+            "mistral:7b": mistral,
+        }
+
         for model_name in self._candidate_ollama_models(available_models=available_models):
             max_attempts = 1
             for attempt in range(1, max_attempts + 1):
@@ -153,22 +180,16 @@ class CrewReporter:
                         max_attempts,
                         len(alerts),
                     )
-                    response = requests.post(
-                        f"{self.settings.ollama_base_url}/api/generate",
-                        json={
-                            "model": model_name,
-                            "prompt": prompt,
-                            "stream": False,
-                            "options": {"temperature": 0.2, "num_predict": 450},
-                        },
-                        timeout=self.settings.ollama_request_timeout_seconds,
-                    )
-                    if response.status_code >= 400:
-                        short_error = response.text[:220].replace("\n", " ").strip()
-                        raise RuntimeError(f"HTTP {response.status_code}: {short_error}")
+                    client = predefined_clients.get(model_name)
+                    if client is None:
+                        client = LangChainOllama(
+                            model=model_name,
+                            base_url=self.settings.ollama_base_url,
+                            temperature=0.2,
+                            num_predict=450,
+                        )
 
-                    payload = response.json()
-                    text = (payload.get("response") or "").strip()
+                    text = str(client.invoke(prompt)).strip()
                     if text:
                         logger.info("Ollama report generated topic=%s model=%s alerts=%d", topic, model_name, len(alerts))
                         return text, {"mode": "ollama", "model": model_name}
