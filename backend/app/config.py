@@ -48,6 +48,7 @@ class Settings:
     ollama_route: str
     ollama_llama_model: str
     ollama_mistral_model: str
+    ollama_request_timeout_seconds: int
     cors_allow_origins: str
     request_timeout_seconds: int
     rss_feeds: tuple[str, ...]
@@ -76,8 +77,9 @@ class Settings:
             ollama_enabled=_env_bool("OLLAMA_ENABLED", True),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/"),
             ollama_route=os.getenv("OLLAMA_ROUTE", "deep").strip().lower(),
-            ollama_llama_model=os.getenv("OLLAMA_LLAMA_MODEL", "llama3:8b").strip(),
+            ollama_llama_model=os.getenv("OLLAMA_LLAMA_MODEL", os.getenv("OLLAMA_MODEL", "llama3:8b")).strip(),
             ollama_mistral_model=os.getenv("OLLAMA_MISTRAL_MODEL", "mistral:7b").strip(),
+            ollama_request_timeout_seconds=int(os.getenv("OLLAMA_REQUEST_TIMEOUT_SECONDS", "120")),
             cors_allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").strip(),
             request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "15")),
             rss_feeds=rss_feeds,

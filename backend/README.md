@@ -36,6 +36,8 @@ Useful options:
 - `OLLAMA_ROUTE` (`fast` uses mistral, any other value uses llama)
 - `OLLAMA_LLAMA_MODEL` (default `llama3:8b`)
 - `OLLAMA_MISTRAL_MODEL` (default `mistral:7b`)
+- `OLLAMA_REQUEST_TIMEOUT_SECONDS` (default `120`)
+- `OLLAMA_MODEL` (optional backward-compatible alias for `OLLAMA_LLAMA_MODEL`)
 - `CORS_ALLOW_ORIGINS` (default from env template)
 - `REQUEST_TIMEOUT_SECONDS`
 - `RSS_FEEDS`

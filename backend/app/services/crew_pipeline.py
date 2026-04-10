@@ -4,13 +4,16 @@ import logging
 import time
 from typing import Iterable
 
+try:
+    from langchain_ollama import OllamaLLM as LangChainOllama
+except Exception:
+    try:
+        from langchain_community.llms import Ollama as LangChainOllama
+    except Exception:
+        LangChainOllama = None
+
 from ..config import Settings
 from ..models import AlertOut
-
-try:
-    from langchain_community.llms import Ollama
-except Exception:
-    Ollama = None
 
 try:
     from google import genai
@@ -141,8 +144,9 @@ class CrewReporter:
             return None, {"reason": "ollama_disabled"}
         if not self.settings.ollama_base_url:
             return None, {"reason": "missing_ollama_base_url"}
-        if Ollama is None:
-            return None, {"reason": "langchain_community_ollama_missing"}
+        if LangChainOllama is None:
+            logger.warning("LangChain Ollama client unavailable; skipping Ollama mode topic=%s", topic)
+            return None, {"reason": "langchain_ollama_missing"}
 
         route = self._select_ollama_route()
         try:
@@ -160,18 +164,26 @@ class CrewReporter:
             }
 
     def _invoke_ollama_router(self, route: str, query: str) -> tuple[str, str]:
-        llama = Ollama(
-            model=self.settings.ollama_llama_model,
-            base_url=self.settings.ollama_base_url,
-            temperature=0.2,
-            num_predict=450,
-        )
-        mistral = Ollama(
-            model=self.settings.ollama_mistral_model,
-            base_url=self.settings.ollama_base_url,
-            temperature=0.2,
-            num_predict=300,
-        )
+        def _build_client(model_name: str, num_predict: int):
+            try:
+                return LangChainOllama(
+                    model=model_name,
+                    base_url=self.settings.ollama_base_url,
+                    temperature=0.2,
+                    num_predict=num_predict,
+                    timeout=self.settings.ollama_request_timeout_seconds,
+                )
+            except TypeError:
+                # Some Ollama client variants do not accept timeout.
+                return LangChainOllama(
+                    model=model_name,
+                    base_url=self.settings.ollama_base_url,
+                    temperature=0.2,
+                    num_predict=num_predict,
+                )
+
+        llama = _build_client(self.settings.ollama_llama_model, 450)
+        mistral = _build_client(self.settings.ollama_mistral_model, 300)
 
         # Keep router behavior exactly as requested: fast -> mistral, else -> llama.
         if route == "fast":
