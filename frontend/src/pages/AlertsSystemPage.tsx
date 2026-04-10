@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppStore, getFilteredAlerts } from '../store/useAppStore';
 import type { FilterType } from '../types';
 import ExplainableAlertCard from '../components/ExplainableAlertCard';
@@ -36,6 +37,8 @@ function computeCityScopedStats(alerts: ReturnType<typeof getFilteredAlerts>) {
 }
 
 export default function AlertsSystemPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const {
     alerts,
     activeFilter,
@@ -47,6 +50,7 @@ export default function AlertsSystemPage() {
     dashboardStats,
   } = useAppStore();
   const [riskOnly, setRiskOnly] = useState<string>('ALL');
+  const [autoOpenAlertId, setAutoOpenAlertId] = useState<string | null>(null);
 
   const effectiveCity = normalizeCityScope(selectedCity) ?? CITY_OPTIONS[0];
 
@@ -55,6 +59,28 @@ export default function AlertsSystemPage() {
       setSelectedCity(CITY_OPTIONS[0]);
     }
   }, [selectedCity, setSelectedCity]);
+
+  useEffect(() => {
+    const state = (location.state as { openAlertId?: string } | null) ?? null;
+    const requestedId = state?.openAlertId;
+    if (!requestedId) return;
+
+    const requested = alerts.find(alert => alert.id.toLowerCase() === requestedId.toLowerCase());
+    if (requested) {
+      setFilter('ALL');
+      setSearchQuery('');
+      setRiskOnly('ALL');
+
+      const city = getCityFromLocation(requested.location);
+      if (city) {
+        setSelectedCity(city);
+      }
+
+      setAutoOpenAlertId(requested.id);
+    }
+
+    navigate(location.pathname, { replace: true, state: null });
+  }, [alerts, location.pathname, location.state, navigate, setFilter, setSearchQuery, setSelectedCity]);
 
   const cityScopedAllAlerts = useMemo(
     () => alerts.filter(a => getCityFromLocation(a.location) === effectiveCity),
@@ -222,7 +248,14 @@ export default function AlertsSystemPage() {
               </div>
             ) : (
               <div className="alerts-rectangle-list">
-                {display.map(alert => <ExplainableAlertCard key={alert.id} alert={alert} />)}
+                {display.map(alert => (
+                  <ExplainableAlertCard
+                    key={alert.id}
+                    alert={alert}
+                    autoOpen={autoOpenAlertId === alert.id}
+                    onAutoOpenHandled={() => setAutoOpenAlertId(null)}
+                  />
+                ))}
               </div>
             )}
           </div>

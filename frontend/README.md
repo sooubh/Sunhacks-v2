@@ -7,7 +7,8 @@ It provides:
 - Explainable alerts interface
 - Realtime pipeline visualization
 - Audit logs view with CSV export
-- Voice assistant dialog with backend + local fallback behavior
+- Voice assistant dialog with Gemini Live websocket streaming (real-time mic/audio) + fallback behavior
+- Firestore persistence for pipeline runs, alerts, dashboard snapshots, and voice transcripts
 
 ## Tech Stack
 
@@ -64,9 +65,10 @@ All routes except `/login` are protected by a simple in-memory auth guard.
 2. Store action calls backend API:
 - Sync mode: `runTopic()`
 - Streaming mode: `streamTopic()`
-3. Response mapper converts backend payload to UI models.
-4. Zustand store updates alerts, pipeline stages, stats, and report preview.
-5. Components re-render with latest state.
+3. Voice assistant calls backend voice endpoint `askVoiceAssistant()` with live dashboard context.
+4. Response mapper converts backend payload to UI models.
+5. Zustand store updates alerts, pipeline stages, stats, and report preview.
+6. Runtime data is persisted to Firestore collections.
 
 Main files:
 - `src/store/useAppStore.ts` - global state and actions
@@ -78,7 +80,9 @@ Main files:
 
 - Backend expects `topic` + `max_items` for topic runs.
 - Stream endpoint sends SSE events: `stage`, `result`, and `error`.
-- Backend meta mode is surfaced in logs (`gemini`, `fallback`, `empty`).
+- Voice endpoint: `POST /api/voice/assistant`.
+- Live voice websocket: `WS /ws/voice/live`.
+- Backend meta mode is surfaced in logs (`ollama`, `gemini`, `fallback`, `empty`).
 
 ## Current Behavior Notes
 

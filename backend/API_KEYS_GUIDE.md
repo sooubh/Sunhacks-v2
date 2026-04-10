@@ -17,11 +17,14 @@ This project supports partial keys. You can start with just one source and add m
 - GNews API: set GNEWS_API_KEY
   - Console: https://gnews.io
 
-- Gemini LLM report mode: set GEMINI_API_KEY
-  - Without this key, backend will automatically try Ollama route mode.
-  - Optional model override: GEMINI_MODEL (default is gemini-flash-latest).
+- Gemini LLM mode: set GEMINI_API_KEY
+  - Used for voice assistant endpoint and as optional fallback for report generation.
+  - Optional report fallback model override: GEMINI_MODEL (default is gemini-flash-latest).
+  - Optional voice model override: GEMINI_LIVE_MODEL (default is models/gemini-3.1-flash-live-preview).
 
 - Ollama LLM report mode (external/local API)
+  - Default report reasoning provider order is Ollama first.
+  - Optional provider order switch: AI_REASONING_PROVIDER_ORDER=ollama_first or gemini_first
   - Optional: OLLAMA_ENABLED=true
   - Optional: OLLAMA_BASE_URL=http://127.0.0.1:11434
   - Optional route: OLLAMA_ROUTE=fast or deep
@@ -32,7 +35,7 @@ This project supports partial keys. You can start with just one source and add m
   - Optional model override: OLLAMA_MISTRAL_MODEL=mistral:7b
   - Optional timeout: OLLAMA_REQUEST_TIMEOUT_SECONDS=120
   - Optional backward-compatible alias: OLLAMA_MODEL (used when OLLAMA_LLAMA_MODEL is not set)
-  - If Gemini and Ollama both fail, backend uses deterministic fallback summary mode.
+  - If Ollama and Gemini both fail, backend uses deterministic fallback summary mode.
 
 - Web scraper source
   - No key required.

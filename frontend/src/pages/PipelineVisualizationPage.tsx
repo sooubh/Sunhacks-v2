@@ -9,14 +9,6 @@ const STAGE_DETAILS: Record<string, { color: string; bg: string }> = {
   reporter: { color: 'var(--risk-low)', bg: 'rgba(34,197,94,0.08)' },
 };
 
-const SOURCE_CARDS = [
-  { name: 'NewsData.io', type: 'News API', icon: '📰', status: 'CONNECTED', latency: '~120ms', volume: '45 articles/run' },
-  { name: 'GNews API', type: 'News API', icon: '🗞', status: 'CONNECTED', latency: '~95ms', volume: '38 articles/run' },
-  { name: 'Times of India RSS', type: 'RSS Feed', icon: '📡', status: 'CONNECTED', latency: '~60ms', volume: '22 articles/run' },
-  { name: 'Tavily Web Search', type: 'Web Search', icon: '🔎', status: 'CONNECTED', latency: '~310ms', volume: '18 results/run' },
-  { name: 'NDTV RSS', type: 'RSS Feed', icon: '📡', status: 'CONNECTED', latency: '~55ms', volume: '25 articles/run' },
-];
-
 function stageResearchLabel(stageId: string, topic: string): string {
   const scopedTopic = topic.trim() || 'public safety signals';
 
@@ -50,21 +42,103 @@ export default function PipelineVisualizationPage() {
     pipelineLiveNode,
     pipelineLiveInsight,
     pipelineActivityFeed,
+    alerts,
+    autoAgentReports,
+    autoAgentLastRun,
+    autoAgentIntervalMinutes,
+    isAutoAgentRunning,
   } = useAppStore();
 
   const totalProcessed = pipelineStages.reduce((sum, s) => sum + s.itemsProcessed, 0);
   const totalTime = pipelineStages.reduce((sum, s) => sum + s.processingTime, 0);
   const activeStage = pipelineStages.findIndex(s => s.status === 'RUNNING');
   const activeTopic = isPipelineRunning ? (pipelineActiveTopic || lastTopic) : lastTopic;
-  const modelConfigured = pipelineModelMode === 'gemini';
+  const modelConfigured = pipelineModelMode === 'gemini' || pipelineModelMode === 'ollama';
 
   const modelBadge = pipelineModelMode === 'unknown'
     ? 'CHECKING'
-    : (pipelineModelMode === 'gemini' ? 'CONFIGURED' : 'FALLBACK');
+    : (modelConfigured ? 'CONFIGURED' : 'FALLBACK');
 
   const modelBadgeClass = pipelineModelMode === 'unknown'
     ? 'unknown'
-    : (pipelineModelMode === 'gemini' ? 'configured' : 'fallback');
+    : (modelConfigured ? 'configured' : 'fallback');
+
+  const sourceCards = (() => {
+    const sourceMap = new Map<string, {
+      name: string;
+      type: string;
+      icon: string;
+      references: number;
+      highRiskRefs: number;
+      lastSeenAt: Date | null;
+    }>();
+
+    const typeLabel = (sourceType: string): string => {
+      if (sourceType === 'NEWS_API') return 'News API';
+      if (sourceType === 'WEB_SEARCH') return 'Web Search';
+      return 'Source';
+    };
+
+    const typeIcon = (sourceType: string): string => {
+      if (sourceType === 'NEWS_API') return '📰';
+      if (sourceType === 'WEB_SEARCH') return '🔎';
+      return '📡';
+    };
+
+    for (const alert of alerts) {
+      for (const source of alert.sources) {
+        const key = `${source.name}::${source.type}`;
+        const existing = sourceMap.get(key);
+        const nowSeen = source.fetchedAt;
+
+        if (!existing) {
+          sourceMap.set(key, {
+            name: source.name,
+            type: typeLabel(source.type),
+            icon: typeIcon(source.type),
+            references: 1,
+            highRiskRefs: alert.riskLevel === 'HIGH' ? 1 : 0,
+            lastSeenAt: nowSeen,
+          });
+          continue;
+        }
+
+        existing.references += 1;
+        if (alert.riskLevel === 'HIGH') {
+          existing.highRiskRefs += 1;
+        }
+        if (!existing.lastSeenAt || nowSeen > existing.lastSeenAt) {
+          existing.lastSeenAt = nowSeen;
+        }
+      }
+    }
+
+    const collectorStage = pipelineStages.find(stage => stage.id === 'collector');
+    const avgLatency = collectorStage && collectorStage.itemsProcessed > 0
+      ? Math.max(8, Math.round(collectorStage.processingTime / collectorStage.itemsProcessed))
+      : null;
+
+    const cards = Array.from(sourceMap.values())
+      .sort((a, b) => b.references - a.references)
+      .slice(0, 8)
+      .map((source) => ({
+        name: source.name,
+        type: source.type,
+        icon: source.icon,
+        status: source.references > 0 ? 'ACTIVE' : 'IDLE',
+        latency: avgLatency ? `~${avgLatency}ms/item` : 'N/A',
+        volume: `${source.references} refs`,
+        highRiskRefs: source.highRiskRefs,
+        lastSeen: source.lastSeenAt ? format(source.lastSeenAt, 'HH:mm:ss') : 'N/A',
+      }));
+
+    if (cards.length > 0) return cards;
+
+    return [
+      { name: 'Tavily', type: 'Web Search', icon: '🔎', status: 'STANDBY', latency: 'N/A', volume: '0 refs', highRiskRefs: 0, lastSeen: 'N/A' },
+      { name: 'NewsAPI/NewsData/GNews', type: 'News API', icon: '📰', status: 'STANDBY', latency: 'N/A', volume: '0 refs', highRiskRefs: 0, lastSeen: 'N/A' },
+    ];
+  })();
 
   return (
     <div>
@@ -235,7 +309,7 @@ export default function PipelineVisualizationPage() {
           📡 OSINT Data Sources
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
-          {SOURCE_CARDS.map(src => (
+          {sourceCards.map(src => (
             <div key={src.name} className="card" style={{ borderColor: 'rgba(34,197,94,0.1)' }}>
               <div className="flex items-center gap-8 mb-8">
                 <span style={{ fontSize: 16 }}>{src.icon}</span>
@@ -243,12 +317,14 @@ export default function PipelineVisualizationPage() {
                   <div style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{src.name}</div>
                   <div style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{src.type}</div>
                 </div>
-                <div className="live-dot" style={{ flexShrink: 0 }} />
+                <div className="live-dot" style={{ flexShrink: 0, opacity: src.status === 'ACTIVE' ? 1 : 0.45 }} />
               </div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <div>Latency: <span style={{ color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)' }}>{src.latency}</span></div>
                 <div>Volume: <span style={{ color: 'var(--text-secondary)' }}>{src.volume}</span></div>
-                <div>Status: <span style={{ color: 'var(--risk-low)', fontWeight: 700 }}>{src.status}</span></div>
+                <div>High-risk refs: <span style={{ color: 'var(--risk-medium)', fontWeight: 700 }}>{src.highRiskRefs}</span></div>
+                <div>Last seen: <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>{src.lastSeen}</span></div>
+                <div>Status: <span style={{ color: src.status === 'ACTIVE' ? 'var(--risk-low)' : 'var(--text-muted)', fontWeight: 700 }}>{src.status}</span></div>
               </div>
             </div>
           ))}
@@ -257,7 +333,7 @@ export default function PipelineVisualizationPage() {
 
       <div className="mt-20">
         <div className="chart-card">
-          <div className="chart-title">🧠 Gemini Intelligence Briefing</div>
+          <div className="chart-title">🧠 AI Intelligence Briefing</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
             Topic: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{lastTopic}</span>
           </div>
@@ -288,8 +364,77 @@ export default function PipelineVisualizationPage() {
             <div className="pipeline-config-note">
               <strong>Model is not fully configured.</strong>
               <div style={{ marginTop: 6 }}>
-                {pipelineModelReason || 'Configure backend model keys, then rerun the pipeline to enable full Gemini briefing output.'}
+                {pipelineModelReason || 'Configure backend model access, then rerun the pipeline to enable full AI briefing output.'}
               </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-20">
+        <div className="chart-card">
+          <div className="chart-title">🤖 Auto Agent Reports (4-City Sweep)</div>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>
+            Runs every <strong>{autoAgentIntervalMinutes} minutes</strong>.
+            {' '}
+            {autoAgentLastRun
+              ? `Last cycle: ${format(autoAgentLastRun, 'dd MMM · HH:mm:ss')}`
+              : 'First cycle is in progress.'}
+            {' '}
+            {isAutoAgentRunning ? 'Status: running.' : 'Status: idle.'}
+          </div>
+
+          {autoAgentReports.length === 0 ? (
+            <div className="pipeline-config-note">
+              <strong>Auto agent reports are warming up.</strong>
+              <div style={{ marginTop: 6 }}>
+                The system will generate 4 real reports, one each for Mumbai, Delhi, Bangalore, and Hyderabad.
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
+              {autoAgentReports.map((entry) => {
+                const chipBg = entry.mode === 'ollama' || entry.mode === 'gemini'
+                  ? 'rgba(34,197,94,0.12)'
+                  : 'rgba(249,115,22,0.12)';
+                const chipColor = entry.mode === 'ollama' || entry.mode === 'gemini'
+                  ? 'var(--risk-low)'
+                  : 'var(--risk-medium)';
+
+                return (
+                  <div key={entry.id} style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 12, background: 'var(--bg-surface)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700 }}>{entry.city}</div>
+                      <span style={{ fontSize: 10, borderRadius: 999, padding: '3px 8px', background: chipBg, color: chipColor, fontWeight: 700, textTransform: 'uppercase' }}>
+                        {entry.mode}
+                      </span>
+                    </div>
+
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 8 }}>
+                      Alerts found: <strong style={{ color: 'var(--text-primary)' }}>{entry.alertsFound}</strong> · Model: <strong style={{ color: 'var(--text-primary)' }}>{entry.modelName}</strong>
+                    </div>
+
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 8 }}>
+                      Topic: <span style={{ color: 'var(--text-secondary)' }}>{entry.topic}</span>
+                    </div>
+
+                    <pre
+                      style={{
+                        margin: 0,
+                        whiteSpace: 'pre-wrap',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 10,
+                        lineHeight: 1.5,
+                        color: 'var(--text-secondary)',
+                        maxHeight: 180,
+                        overflowY: 'auto',
+                      }}
+                    >
+                      {entry.report}
+                    </pre>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

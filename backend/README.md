@@ -7,7 +7,7 @@ Pipeline stages:
 - Cleaner: removes duplicate/noisy records.
 - Analyzer: infers category, sentiment, keywords, and location.
 - Predictor: computes risk, confidence, impact, escalation, and actions.
-- Reporter: generates final intelligence briefing with Gemini, then Ollama route mode, then deterministic fallback.
+- Reporter: generates final intelligence briefing with Ollama-first reasoning, Gemini fallback, then deterministic fallback.
 
 ## Install
 
@@ -31,6 +31,8 @@ In `backend/.env`, fill keys as available:
 Useful options:
 - `TAVILY_RECENT_DAYS` (default `3`)
 - `GEMINI_MODEL` (default `gemini-flash-latest`)
+- `GEMINI_LIVE_MODEL` (default `models/gemini-3.1-flash-live-preview`)
+- `AI_REASONING_PROVIDER_ORDER` (`ollama_first` or `gemini_first`, default `ollama_first`)
 - `OLLAMA_ENABLED` (default `true`)
 - `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`)
 - `OLLAMA_ROUTE` (`fast` uses mistral, any other value uses llama)
@@ -45,8 +47,15 @@ Useful options:
 
 Minimum useful setup:
 - `NEWSAPI_KEY` or `TAVILY_API_KEY`
-- For AI summaries, either `GEMINI_API_KEY` or a running Ollama server
+- For AI report reasoning, run Ollama (`OLLAMA_ENABLED=true` and reachable `OLLAMA_BASE_URL`)
+- For voice assistant with Gemini live model, set `GEMINI_API_KEY`
 - RSS can still work without external keys
+
+Live voice websocket notes:
+- Endpoint: `ws://127.0.0.1:8000/ws/voice/live`
+- First message must be JSON with `type=start` and optional `dashboard_context`
+- Audio chunks must be mono PCM16 base64 (`audio/pcm`) at 16kHz input
+- Model returns streamed PCM16 audio at 24kHz and optional text chunks
 
 ## Run
 
@@ -59,6 +68,8 @@ uvicorn app.main:app --reload --port 8000
 - `GET /health`
 - `GET /api/realtime/sources`
 - `POST /api/realtime/topic`
+- `POST /api/voice/assistant`
+- `WS /ws/voice/live`
 - `GET /api/realtime/stream?topic=...&max_items=...` (SSE)
 
 ## Quick Test

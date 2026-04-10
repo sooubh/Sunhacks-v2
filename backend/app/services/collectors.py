@@ -20,16 +20,14 @@ class OSINTCollector:
         self.settings = settings
 
     def collect(self, topic: str, max_items: int) -> list[SourceSignal]:
-        per_source = max(3, max_items // 7)
+        # API-only collection mode: Tavily + News APIs.
+        per_source = max(3, max_items // 4)
 
         collected: list[SourceSignal] = []
         collected.extend(self._collect_newsapi(topic, per_source))
         collected.extend(self._collect_newsdata(topic, per_source))
         collected.extend(self._collect_gnews(topic, per_source))
         collected.extend(self._collect_tavily(topic, per_source))
-        collected.extend(self._collect_rss(topic, per_source))
-        collected.extend(self._collect_google_news_rss(topic, per_source))
-        collected.extend(self._collect_web_scraper(topic, per_source))
 
         deduped: dict[str, SourceSignal] = {}
         for signal in collected:

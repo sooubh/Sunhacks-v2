@@ -155,14 +155,15 @@ High-level response shape:
     "max_items": 20,
     "sources_collected": 25,
     "sources_after_cleaning": 20,
-    "mode": "gemini",
-    "model": "gemini-flash-latest"
+    "mode": "ollama",
+    "model": "llama3:8b"
   }
 }
 ```
 
 Possible `meta.mode` values:
-- `gemini`: Gemini-generated report success
+- `ollama`: Ollama-generated report success
+- `gemini`: Gemini-generated report success (fallback provider)
 - `fallback`: deterministic report due to key/sdk/runtime/model issue
 - `empty`: no actionable alerts
 
@@ -199,7 +200,77 @@ event: result
 data: {"topic":"...","alerts":[...],"report":"...","meta":{...}}
 ```
 
-## 5) Error Behavior
+## 5) Voice Assistant (Dashboard-Aware)
+
+Endpoint:
+- `POST /api/voice/assistant`
+
+Request body:
+
+```json
+{
+  "query": "Give me Mumbai risk overview",
+  "dashboard_context": {
+    "topic": "mumbai protest traffic",
+    "city": "Mumbai",
+    "stats": {
+      "activeAlerts": 8,
+      "highRisk": 3,
+      "mediumRisk": 3,
+      "lowRisk": 2
+    }
+  }
+}
+```
+
+Response shape:
+
+```json
+{
+  "reply": "Current Mumbai posture is elevated...",
+  "provider": "gemini",
+  "model": "models/gemini-3.1-flash-live-preview",
+  "mode": "gemini_live_voice",
+  "generated_at": "2026-04-11T10:20:30.123Z"
+}
+```
+
+## 6) Live Voice WebSocket
+
+Endpoint:
+- `WS /ws/voice/live`
+
+Purpose:
+- Real-time Gemini Live voice session with bidirectional streaming audio.
+
+Client first message (required):
+
+```json
+{
+  "type": "start",
+  "voice_name": "Zephyr",
+  "dashboard_context": {
+    "topic": "mumbai traffic unrest",
+    "city": "Mumbai"
+  }
+}
+```
+
+Client message types:
+- `audio`: `{ "type": "audio", "data": "<base64 pcm16 mono 16k>" }`
+- `text`: `{ "type": "text", "text": "status update", "end_of_turn": true }`
+- `context`: `{ "type": "context", "dashboard_context": {...} }`
+- `end_turn`: `{ "type": "end_turn" }`
+- `stop`: `{ "type": "stop" }`
+
+Server event types:
+- `ready`: session established with model metadata
+- `audio`: streamed PCM16 chunks (base64)
+- `text`: streamed text chunks
+- `turn_complete`: turn has ended
+- `error`: session/runtime error message
+
+## 7) Error Behavior
 
 Synchronous endpoint (`POST /api/realtime/topic`):
 - On unhandled pipeline error, returns HTTP 500 with detail string:
@@ -209,7 +280,14 @@ Streaming endpoint (`GET /api/realtime/stream`):
 - Emits `error` event with JSON payload:
 - `{"error": "..."}`
 
-## 6) Minimal Test Commands
+Voice endpoint (`POST /api/voice/assistant`):
+- On unhandled runtime error, returns HTTP 500 with detail string:
+- `{"detail": "Voice assistant failed: ..."}`
+
+WebSocket endpoint (`WS /ws/voice/live`):
+- Sends `error` event on runtime/config failures, then closes socket.
+
+## 8) Minimal Test Commands
 
 Health:
 
@@ -229,7 +307,13 @@ Stream run:
 curl "http://127.0.0.1:8000/api/realtime/stream?topic=delhi+protest&max_items=20"
 ```
 
-## 7) Frontend Integration Notes
+Voice run:
+
+```powershell
+curl -X POST http://127.0.0.1:8000/api/voice/assistant -H "Content-Type: application/json" -d "{\"query\":\"Give me Mumbai risk summary\",\"dashboard_context\":{\"topic\":\"mumbai law and order\",\"city\":\"Mumbai\"}}"
+```
+
+## 9) Frontend Integration Notes
 
 Frontend API client:
 - `frontend/src/services/realtimeApi.ts`

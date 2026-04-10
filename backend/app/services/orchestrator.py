@@ -145,7 +145,7 @@ class PipelineOrchestrator:
             PipelineStage(
                 id="collector",
                 name="OSINT Collector",
-                description="Fetches from NewsAPI, NewsData, GNews, Tavily (recent news), RSS, Google News, and website scraping",
+                description="Fetches from Tavily and News APIs (NewsAPI, NewsData, GNews)",
             ),
             PipelineStage(
                 id="cleaner",
@@ -165,7 +165,7 @@ class PipelineOrchestrator:
             PipelineStage(
                 id="reporter",
                 name="AI Reporter",
-                description="Generates final operational briefing using Gemini or Ollama",
+                description="Generates final operational briefing using Ollama-first reasoning with Gemini fallback",
             ),
         ]
 

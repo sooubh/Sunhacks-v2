@@ -4,15 +4,17 @@ import json
 import logging
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from .config import Settings
-from .models import TopicRequest, TopicResult
+from .models import TopicRequest, TopicResult, VoiceAssistantRequest, VoiceAssistantResponse
 from .services.collectors import OSINTCollector
 from .services.crew_pipeline import CrewReporter
+from .services.live_voice_ws import LiveVoiceWebSocketGateway
 from .services.orchestrator import PipelineOrchestrator
+from .services.voice_assistant import VoiceAssistantService
 
 load_dotenv()
 settings = Settings.from_env()
@@ -21,7 +23,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="LEIS Realtime Agent API",
     version="0.1.0",
-    description="Simple FastAPI backend with Gemini/Ollama-assisted agents for live OSINT topic analysis.",
+    description="FastAPI backend for realtime OSINT analysis with Ollama-first report reasoning and Gemini live voice assistant.",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -35,10 +37,15 @@ orchestrator = PipelineOrchestrator(
     collector=OSINTCollector(settings=settings),
     reporter=CrewReporter(settings=settings),
 )
+voice_assistant = VoiceAssistantService(settings=settings)
+live_voice_gateway = LiveVoiceWebSocketGateway(settings=settings)
 
 
 @app.get("/health")
 def health() -> dict:
+    provider_order = settings.reasoning_provider_order()
+    local_only = provider_order == ("ollama",)
+
     return {
         "ok": True,
         "service": "leis-realtime-agent-api",
@@ -53,7 +60,12 @@ def health() -> dict:
         },
         "ai": {
             "gemini_enabled": bool(settings.gemini_api_key),
+            "local_only": local_only,
+            "active_reasoning_providers": list(provider_order),
+            "gemini_live_model": settings.gemini_live_model,
+            "gemini_live_ws_enabled": bool(settings.gemini_api_key),
             "ollama_enabled": bool(settings.ollama_enabled and settings.ollama_base_url),
+            "reasoning_provider_order": "->".join(provider_order),
             "ollama_route": settings.ollama_route,
             "ollama_llama_model": settings.ollama_llama_model,
             "ollama_mistral_model": settings.ollama_mistral_model,
@@ -62,20 +74,31 @@ def health() -> dict:
     }
 
 
+@app.websocket("/ws/voice/live")
+async def voice_live_socket(websocket: WebSocket):
+    await live_voice_gateway.handle(websocket)
+
+
 @app.get("/api/realtime/sources")
 def list_sources() -> dict:
+    provider_order = settings.reasoning_provider_order()
+    local_only = provider_order == ("ollama",)
+
     return {
-        "rss_feeds": list(settings.rss_feeds),
-        "web_scraper_urls": list(settings.web_scraper_urls),
+        "rss_feeds": [],
+        "web_scraper_urls": [],
         "tavily_recent_days": settings.tavily_recent_days,
         "integrations": {
             "tavily": bool(settings.tavily_api_key),
             "newsapi": bool(settings.newsapi_key),
             "newsdata": bool(settings.newsdata_api_key),
             "gnews": bool(settings.gnews_api_key),
-            "web_scraper": True,
-            "gemini_llm": bool(settings.gemini_api_key),
+            "rss": False,
+            "web_scraper": False,
+            "gemini_llm": bool(settings.gemini_api_key) and not local_only,
             "ollama_llm": bool(settings.ollama_enabled and settings.ollama_base_url),
+            "local_only": local_only,
+            "active_reasoning_providers": list(provider_order),
         },
     }
 
@@ -108,6 +131,37 @@ def run_topic(payload: TopicRequest) -> TopicResult:
     except Exception as exc:
         logger.exception("topic analysis failed topic=%s max_items=%s", payload.topic, payload.max_items)
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {exc}") from exc
+
+
+@app.post("/api/voice/assistant", response_model=VoiceAssistantResponse)
+def voice_chat(payload: VoiceAssistantRequest) -> VoiceAssistantResponse:
+    try:
+        reply, meta = voice_assistant.ask(
+            query=payload.query,
+            dashboard_context=payload.dashboard_context,
+            assistant_mode=payload.mode,
+        )
+        provider_raw = str(meta.get("provider", "fallback")).lower()
+        provider = provider_raw if provider_raw in {"gemini", "ollama", "fallback"} else "fallback"
+        model = str(meta.get("model", "unknown"))
+        mode = str(meta.get("mode", "voice_assistant"))
+
+        logger.info(
+            "voice assistant response provider=%s model=%s mode=%s query_len=%d",
+            provider,
+            model,
+            mode,
+            len(payload.query),
+        )
+        return VoiceAssistantResponse(
+            reply=reply,
+            provider=provider,
+            model=model,
+            mode=mode,
+        )
+    except Exception as exc:
+        logger.exception("voice assistant failed query=%s", payload.query)
+        raise HTTPException(status_code=500, detail=f"Voice assistant failed: {exc}") from exc
 
 
 @app.get("/api/realtime/stream")

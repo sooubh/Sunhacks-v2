@@ -38,6 +38,23 @@ interface CityHeatStat {
   high: number;
   medium: number;
   low: number;
+  resolved: number;
+  avgConfidence: number;
+  avgEscalation: number;
+  topAlertTitle: string;
+  lastUpdatedAt: Date | null;
+}
+
+interface AlertMapPoint {
+  id: string;
+  city: string;
+  lat: number;
+  lng: number;
+  title: string;
+  riskLevel: 'HIGH' | 'MEDIUM' | 'LOW';
+  confidence: number;
+  escalationProbability: number;
+  updatedAt: Date;
 }
 
 interface ProactiveInsight {
@@ -176,9 +193,23 @@ export default function CommandCenterPage() {
       const coord = CITY_COORDS[city];
       if (!coord) return;
 
-      const cityActive = alerts.filter(
-        (alert) => getCityFromLocation(alert.location) === city && alert.status === 'ACTIVE',
-      );
+      const cityScoped = alerts.filter((alert) => getCityFromLocation(alert.location) === city);
+      const cityActive = cityScoped.filter(alert => alert.status === 'ACTIVE');
+      const cityResolved = cityScoped.filter(alert => alert.status === 'RESOLVED');
+      const topAlert = [...cityActive].sort((a, b) => {
+        const rank: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 };
+        return rank[b.riskLevel] - rank[a.riskLevel] || b.confidence - a.confidence;
+      })[0] ?? null;
+
+      const avgConfidence = cityActive.length > 0
+        ? Math.round(cityActive.reduce((sum, alert) => sum + alert.confidence, 0) / cityActive.length)
+        : 0;
+      const avgEscalation = cityActive.length > 0
+        ? Math.round(cityActive.reduce((sum, alert) => sum + alert.escalationProbability, 0) / cityActive.length)
+        : 0;
+      const lastUpdatedAt = cityScoped.length > 0
+        ? [...cityScoped].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0].updatedAt
+        : null;
 
       rows.push({
         city,
@@ -188,11 +219,43 @@ export default function CommandCenterPage() {
         high: cityActive.filter(a => a.riskLevel === 'HIGH').length,
         medium: cityActive.filter(a => a.riskLevel === 'MEDIUM').length,
         low: cityActive.filter(a => a.riskLevel === 'LOW').length,
+        resolved: cityResolved.length,
+        avgConfidence,
+        avgEscalation,
+        topAlertTitle: topAlert?.title ?? '',
+        lastUpdatedAt,
       });
     });
 
     return rows;
   }, [alerts]);
+
+  const alertMapPoints = useMemo<AlertMapPoint[]>(() => {
+    const points: AlertMapPoint[] = [];
+
+    for (const alert of alerts) {
+      if (alert.status !== 'ACTIVE') continue;
+
+        const city = getCityFromLocation(alert.location) ?? activeCity;
+        const base = CITY_COORDS[city] || CITY_COORDS[activeCity];
+        if (!base) continue;
+
+        const jitter = getPointJitter(`${alert.id}-map-dot`);
+        points.push({
+          id: alert.id,
+          city,
+          lat: base.lat + jitter.lat,
+          lng: base.lng + jitter.lng,
+          title: alert.title,
+          riskLevel: alert.riskLevel,
+          confidence: alert.confidence,
+          escalationProbability: alert.escalationProbability,
+          updatedAt: alert.updatedAt,
+        });
+      }
+
+    return points.slice(0, 160);
+  }, [activeCity, alerts]);
 
   const heatPoints = useMemo<Array<[number, number, number]>>(() => {
     const points: Array<[number, number, number]> = [];
@@ -533,6 +596,7 @@ export default function CommandCenterPage() {
               updatedAt={dashboardStats.lastUpdated}
               cityStats={cityHeatStats}
               heatPoints={heatPoints}
+              alertPoints={alertMapPoints}
               onCitySelect={setSelectedCity}
             />
           </div>

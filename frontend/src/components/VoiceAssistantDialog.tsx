@@ -1,175 +1,753 @@
-import { useState, useRef, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { runTopic, type UIRunResult } from '../services/realtimeApi';
+import { askVoiceAssistant, type AssistantMode, type VoiceDashboardContext } from '../services/realtimeApi';
+import { persistVoiceTranscript } from '../services/firebaseDataService';
+import type { Alert } from '../types';
+import {
+  LiveVoiceSessionClient,
+  float32ToPcm16Base64,
+  pcm16Base64ToFloat32,
+} from '../services/liveVoiceSession';
 
-interface Message { role: 'user' | 'ai'; text: string; time: string; }
-
-const CANNED_RESPONSES: { pattern: RegExp; response: (store: ReturnType<typeof useAppStore.getState>) => string }[] = [
-  {
-    pattern: /high.?risk|critical|urgent/i,
-    response: (s) => {
-      const high = s.alerts.filter(a => a.riskLevel === 'HIGH' && a.status === 'ACTIVE');
-      return `Found ${high.length} HIGH risk active alerts. Top incident: "${high[0]?.title ?? 'None'}" in ${high[0]?.location ?? '—'}. Confidence: ${high[0]?.confidence ?? '—'}%.`;
-    },
-  },
-  {
-    pattern: /pune|mumbai|delhi|bengaluru|hyderabad|kollkata|chennai/i,
-    response: (s) => {
-      const term = (s.voiceQuery || '').match(/pune|mumbai|delhi|bengaluru|hyderabad|kolkata|chennai/i)?.[0] ?? '';
-      const found = s.alerts.filter(a => a.location.toLowerCase().includes(term.toLowerCase()));
-      return found.length > 0
-        ? `${found.length} incidents detected in ${term}. Most severe: "${found[0]?.title}" — Risk: ${found[0]?.riskLevel}.`
-        : `No active incidents found for ${term}.`;
-    },
-  },
-  {
-    pattern: /summar|brief|overview|status/i,
-    response: (s) => {
-      const st = s.dashboardStats;
-      return `Current Status: ${st.activeAlerts} active alerts, ${st.highRisk} HIGH risk, ${st.mediumRisk} MEDIUM, ${st.lowRisk} LOW. Avg confidence: ${st.avgConfidence}%. Most affected area: ${st.topLocation}.`;
-    },
-  },
-  {
-    pattern: /protest|violence|unrest|accident/i,
-    response: (s) => {
-      const cat = (s.voiceQuery || '').match(/protest|violence|unrest|accident/i)?.[0]?.toUpperCase() ?? '';
-      const found = s.alerts.filter(a => a.category === cat);
-      return `${found.length} ${cat} incidents found. ${found.filter(a => a.riskLevel === 'HIGH').length} are HIGH risk.`;
-    },
-  },
-  {
-    pattern: /resolve|close|done/i,
-    response: () => 'To resolve an alert, open the Alerts System page and click "Resolve" on the relevant card.',
-  },
-  {
-    pattern: /pipeline|processing|collector/i,
-    response: (s) => {
-      const stages = s.pipelineStages;
-      const done = stages.filter(s => s.status === 'DONE').length;
-      return `AI Pipeline status: ${done}/${stages.length} stages complete. Last processed: ${stages[stages.length - 1]?.itemsProcessed ?? 0} events.`;
-    },
-  },
-];
-
-function getAIResponse(query: string, state: ReturnType<typeof useAppStore.getState>): string {
-  for (const r of CANNED_RESPONSES) {
-    if (r.pattern.test(query)) return r.response(state);
-  }
-  return `Processing query: "${query}". Intelligence analysis underway. Try asking about high risk alerts, specific locations, or pipeline status.`;
+interface Message {
+  role: 'user' | 'ai';
+  text: string;
+  time: string;
 }
+
+type LiveStatus = 'CONNECTING' | 'LIVE' | 'OFFLINE';
+
+const SPEECH_RMS_THRESHOLD = 0.01;
+const END_TURN_SILENCE_MS = 900;
 
 function flattenText(value: string, maxLength = 500): string {
   const compact = value.replace(/\s+/g, ' ').trim();
   return compact.length > maxLength ? `${compact.slice(0, maxLength)}...` : compact;
 }
 
-function formatBackendReply(result: UIRunResult): string {
-  const mode = String(result.meta?.mode ?? 'unknown');
-  const reason = typeof result.meta?.reason === 'string' ? result.meta.reason : '';
-  const intro = mode === 'gemini'
-    ? `Gemini analysis complete for "${result.topic}".`
-    : `AI fallback mode (${reason || mode}) for "${result.topic}".`;
+const TERM_STOP_WORDS = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'have', 'will', 'into',
+  'what', 'when', 'where', 'about', 'please', 'show', 'open', 'alert', 'city',
+  'risk', 'status', 'update', 'tell', 'give', 'need', 'want', 'could', 'would',
+]);
 
-  return `${intro} ${flattenText(result.report)}`;
+function extractUserTerms(text: string): string[] {
+  const normalized = text.toLowerCase().replace(/[^a-z0-9\s-]/g, ' ');
+  const tokens = normalized
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token => token.length >= 3 && !TERM_STOP_WORDS.has(token));
+
+  return Array.from(new Set(tokens)).slice(0, 8);
+}
+
+function findRequestedAlert(query: string, alerts: Alert[]): Alert | null {
+  const exactMatch = query.match(/(?:open|show|view|inspect|go\s+to)\s+alert\s*#?\s*([a-z0-9-]+)/i);
+  if (exactMatch?.[1]) {
+    const id = exactMatch[1].toLowerCase();
+    return alerts.find(alert => alert.id.toLowerCase() === id) ?? null;
+  }
+
+  if (/(open|show|view).*(latest|new|recent).*(alert)/i.test(query)) {
+    const sorted = [...alerts].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return sorted[0] ?? null;
+  }
+
+  if (/(open|show|view).*(high).*(alert)/i.test(query)) {
+    const highest = [...alerts]
+      .filter(alert => alert.status === 'ACTIVE')
+      .sort((a, b) => {
+        const rank: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 };
+        return rank[b.riskLevel] - rank[a.riskLevel] || b.confidence - a.confidence;
+      });
+    return highest[0] ?? null;
+  }
+
+  return null;
+}
+
+function getLocalSmartChatFallbackResponse(
+  query: string,
+  state: ReturnType<typeof useAppStore.getState>,
+): string {
+  const stats = state.dashboardStats;
+  const topAlert = state.alerts
+    .filter(alert => alert.status === 'ACTIVE')
+    .sort((a, b) => b.confidence - a.confidence)[0];
+
+  return [
+    `Situation: You asked "${query}". Live AI is unavailable, so this is a local smart analysis from current dashboard data.`,
+    `Risk Snapshot: active=${stats.activeAlerts}, high=${stats.highRisk}, medium=${stats.mediumRisk}, low=${stats.lowRisk}; top area=${stats.topLocation}.`,
+    `Signal Flow Diagram: incoming query -> context scan -> risk prioritization -> response recommendation.`,
+    'Recommended Actions:',
+    `1) Prioritize ${stats.highRisk > 0 ? `${stats.highRisk} HIGH risk` : 'active'} incidents in ${stats.topLocation}.`,
+    `2) Validate latest signal: ${topAlert ? `${topAlert.title} (${topAlert.location})` : 'run a fresh pipeline cycle'}.`,
+    '3) Reassess escalation probability after the next data refresh window.',
+  ].join('\n');
+}
+
+function speakText(text: string): void {
+  if (!('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(flattenText(text, 280));
+  utterance.lang = 'en-IN';
+  utterance.rate = 1;
+  utterance.pitch = 1;
+  window.speechSynthesis.speak(utterance);
+}
+
+function buildDashboardContext(
+  state: ReturnType<typeof useAppStore.getState>,
+  conversation?: { recentUserQueries: string[]; userTerms: string[]; continuousMode: boolean },
+): VoiceDashboardContext {
+  const topic = state.pipelineActiveTopic || state.lastTopic || state.voiceQuery || 'public safety signals';
+  const rank = { HIGH: 3, MEDIUM: 2, LOW: 1 };
+  const alertsByPriority = [...state.alerts]
+    .sort((a, b) => rank[b.riskLevel] - rank[a.riskLevel] || b.confidence - a.confidence);
+
+  const topAlerts = alertsByPriority
+    .filter(alert => alert.status === 'ACTIVE')
+    .slice(0, 6)
+    .map(alert => ({
+      id: alert.id,
+      title: alert.title,
+      location: alert.location,
+      riskLevel: alert.riskLevel,
+      confidence: alert.confidence,
+      status: alert.status,
+    }));
+
+  const recentAlerts = [...state.alerts]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .slice(0, 10)
+    .map(alert => ({
+      id: alert.id,
+      title: alert.title,
+      summary: flattenText(alert.summary || '', 220),
+      location: alert.location,
+      riskLevel: alert.riskLevel,
+      status: alert.status,
+      category: alert.category,
+      sentiment: alert.sentiment,
+      confidence: alert.confidence,
+      escalationProbability: alert.escalationProbability,
+      keywords: (alert.keywords || []).slice(0, 6),
+      createdAt: alert.createdAt.toISOString(),
+    }));
+
+  const categoryAgg: Record<string, { total: number; active: number; highRisk: number }> = {};
+  const locationAgg: Record<string, { total: number; active: number; highRisk: number }> = {};
+
+  for (const alert of state.alerts) {
+    if (!categoryAgg[alert.category]) {
+      categoryAgg[alert.category] = { total: 0, active: 0, highRisk: 0 };
+    }
+    if (!locationAgg[alert.location]) {
+      locationAgg[alert.location] = { total: 0, active: 0, highRisk: 0 };
+    }
+
+    categoryAgg[alert.category].total += 1;
+    locationAgg[alert.location].total += 1;
+    if (alert.status === 'ACTIVE') {
+      categoryAgg[alert.category].active += 1;
+      locationAgg[alert.location].active += 1;
+    }
+    if (alert.riskLevel === 'HIGH') {
+      categoryAgg[alert.category].highRisk += 1;
+      locationAgg[alert.location].highRisk += 1;
+    }
+  }
+
+  const categoryBreakdown = Object.entries(categoryAgg)
+    .map(([category, counts]) => ({ category, ...counts }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 6);
+
+  const locationBreakdown = Object.entries(locationAgg)
+    .map(([location, counts]) => ({ location, ...counts }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 6);
+
+  const pipelineStages = state.pipelineStages.slice(0, 5).map(stage => ({
+    id: stage.id,
+    name: stage.name,
+    status: stage.status,
+    itemsProcessed: stage.itemsProcessed,
+    processingTime: stage.processingTime,
+  }));
+
+  return {
+    topic,
+    city: state.selectedCity,
+    stats: {
+      totalAlerts: state.dashboardStats.totalAlerts,
+      activeAlerts: state.dashboardStats.activeAlerts,
+      highRisk: state.dashboardStats.highRisk,
+      mediumRisk: state.dashboardStats.mediumRisk,
+      lowRisk: state.dashboardStats.lowRisk,
+      avgConfidence: state.dashboardStats.avgConfidence,
+      topLocation: state.dashboardStats.topLocation,
+    },
+    pipeline: {
+      isRunning: state.isPipelineRunning,
+      activeNode: state.pipelineLiveNode,
+      modelMode: state.pipelineModelMode,
+      modelName: state.pipelineModelName,
+    },
+    topAlerts,
+    recentAlerts,
+    categoryBreakdown,
+    locationBreakdown,
+    pipelineStages,
+    latestReportSnippet: flattenText(state.latestReport, 800),
+    conversation,
+  };
 }
 
 export default function VoiceAssistantDialog() {
   const { setVoiceOpen, setVoiceQuery } = useAppStore();
   const storeState = useAppStore.getState;
+  const navigate = useNavigate();
+
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'ai', text: 'Leis Voice AI ready. Ask me about active alerts, locations, or risk levels.', time: new Date().toLocaleTimeString() },
+    {
+      role: 'ai',
+      text: 'Cyna is ready. Use Smart Chat for structured analysis, or switch to Direct Voice for mic-only commands.',
+      time: new Date().toLocaleTimeString(),
+    },
   ]);
   const [input, setInput] = useState('');
   const [listening, setListening] = useState(false);
   const [isAiResponding, setIsAiResponding] = useState(false);
   const [respondingTopic, setRespondingTopic] = useState('');
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>('CONNECTING');
+  const [continuousMode, setContinuousMode] = useState(true);
+  const [assistantMode, setAssistantMode] = useState<AssistantMode>('chat');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<any>(null);
+  const liveClientRef = useRef<LiveVoiceSessionClient | null>(null);
+
+  const currentTurnUserQueryRef = useRef('');
+  const assistantDraftIndexRef = useRef<number | null>(null);
+  const assistantDraftTextRef = useRef('');
+  const assistantTurnHadAudioRef = useRef(false);
+
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const micContextRef = useRef<AudioContext | null>(null);
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const micMuteGainRef = useRef<GainNode | null>(null);
+
+  const playbackContextRef = useRef<AudioContext | null>(null);
+  const playbackCursorRef = useRef(0);
+
+  const listeningRef = useRef(false);
+  const continuousModeRef = useRef(true);
+  const continuousSessionActiveRef = useRef(false);
+  const awaitingTurnCompletionRef = useRef(false);
+  const speechDetectedRef = useRef(false);
+  const lastSpeechAtRef = useRef(0);
+  const recentUserQueriesRef = useRef<string[]>([]);
+  const recentUserTermsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    listeningRef.current = listening;
+  }, [listening]);
+
+  useEffect(() => {
+    continuousModeRef.current = continuousMode;
+    if (!continuousMode) {
+      continuousSessionActiveRef.current = false;
+    }
+  }, [continuousMode]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const conversationContext = () => ({
+    recentUserQueries: recentUserQueriesRef.current,
+    userTerms: recentUserTermsRef.current,
+    continuousMode: continuousModeRef.current,
+  });
+
+  const rememberUserInput = (query: string) => {
+    if (!query.trim()) return;
+
+    recentUserQueriesRef.current = [query.trim(), ...recentUserQueriesRef.current].slice(0, 8);
+    const mergedTerms = [...extractUserTerms(query), ...recentUserTermsRef.current];
+    recentUserTermsRef.current = Array.from(new Set(mergedTerms)).slice(0, 14);
+  };
+
+  const appendAssistantChunk = (chunk: string) => {
+    const cleanChunk = chunk || '';
+    if (!cleanChunk) return;
+
+    setMessages(prev => {
+      if (assistantDraftIndexRef.current === null) {
+        const next = [
+          ...prev,
+          {
+            role: 'ai' as const,
+            text: cleanChunk,
+            time: new Date().toLocaleTimeString(),
+          },
+        ];
+        assistantDraftIndexRef.current = next.length - 1;
+        assistantDraftTextRef.current = cleanChunk;
+        return next;
+      }
+
+      const index = assistantDraftIndexRef.current;
+      if (index < 0 || index >= prev.length) return prev;
+
+      const next = [...prev];
+      const previousText = next[index].text;
+      const merged = `${previousText}${cleanChunk}`;
+      next[index] = { ...next[index], text: merged };
+      assistantDraftTextRef.current = merged;
+      return next;
+    });
+  };
+
+  const queuePcmAudio = async (base64Pcm: string) => {
+    assistantTurnHadAudioRef.current = true;
+
+    if (!playbackContextRef.current) {
+      playbackContextRef.current = new AudioContext({ sampleRate: 24000 });
+      playbackCursorRef.current = 0;
+    }
+
+    const context = playbackContextRef.current;
+    if (context.state === 'suspended') {
+      await context.resume();
+    }
+
+    const samples = pcm16Base64ToFloat32(base64Pcm);
+    if (samples.length === 0) return;
+
+    const buffer = context.createBuffer(1, samples.length, 24000);
+    buffer.getChannelData(0).set(samples);
+
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+
+    const now = context.currentTime;
+    const startAt = Math.max(now, playbackCursorRef.current || now);
+    source.start(startAt);
+    playbackCursorRef.current = startAt + buffer.duration;
+  };
+
+  const stopMicCapture = (sendEndTurn: boolean) => {
+    const hadActiveCapture = Boolean(mediaStreamRef.current || micProcessorRef.current || micContextRef.current);
+
+    if (micProcessorRef.current) {
+      micProcessorRef.current.disconnect();
+      micProcessorRef.current.onaudioprocess = null;
+      micProcessorRef.current = null;
+    }
+    if (micSourceRef.current) {
+      micSourceRef.current.disconnect();
+      micSourceRef.current = null;
+    }
+    if (micMuteGainRef.current) {
+      micMuteGainRef.current.disconnect();
+      micMuteGainRef.current = null;
+    }
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    if (micContextRef.current) {
+      void micContextRef.current.close();
+      micContextRef.current = null;
+    }
+
+    if (hadActiveCapture || listening) {
+      setListening(false);
+      speechDetectedRef.current = false;
+      lastSpeechAtRef.current = 0;
+      if (sendEndTurn && liveClientRef.current?.isConnected()) {
+        setIsAiResponding(true);
+        awaitingTurnCompletionRef.current = true;
+        liveClientRef.current.endTurn();
+      }
+    }
+  };
+
+  const connectLiveSession = async (announce = false): Promise<boolean> => {
+    const dashboardContext = buildDashboardContext(storeState(), conversationContext());
+
+    setLiveStatus('CONNECTING');
+    const liveClient = new LiveVoiceSessionClient({
+      onReady: () => {
+        setLiveStatus('LIVE');
+        if (announce) {
+          setMessages(prev => [
+            ...prev,
+            {
+              role: 'ai',
+              text: 'Voice channel connected. Cyna is online.',
+              time: new Date().toLocaleTimeString(),
+            },
+          ]);
+        }
+      },
+      onText: (text) => {
+        appendAssistantChunk(text);
+      },
+      onAudio: (base64Pcm) => {
+        void queuePcmAudio(base64Pcm);
+      },
+      onTurnComplete: () => {
+        setIsAiResponding(false);
+        setRespondingTopic('');
+        awaitingTurnCompletionRef.current = false;
+
+        let finalReply = assistantDraftTextRef.current.trim();
+        if (!finalReply && assistantTurnHadAudioRef.current) {
+          finalReply = 'Live audio response delivered.';
+          setMessages(prev => [
+            ...prev,
+            {
+              role: 'ai',
+              text: finalReply,
+              time: new Date().toLocaleTimeString(),
+            },
+          ]);
+        }
+
+        if (finalReply) {
+          const topic = buildDashboardContext(storeState()).topic;
+          void persistVoiceTranscript({
+            userId: storeState().user?.uid,
+            topic,
+            query: currentTurnUserQueryRef.current || 'live microphone query',
+            reply: finalReply,
+            provider: 'ai',
+            model: 'runtime',
+            mode: 'live_voice_ws',
+          }).catch((persistError) => {
+            console.warn('[Firebase] Failed to persist live voice transcript', { persistError });
+          });
+
+          if (!assistantTurnHadAudioRef.current) {
+            speakText(finalReply);
+          }
+        }
+
+        assistantDraftIndexRef.current = null;
+        assistantDraftTextRef.current = '';
+        assistantTurnHadAudioRef.current = false;
+        currentTurnUserQueryRef.current = '';
+
+        if (continuousModeRef.current && continuousSessionActiveRef.current && !listeningRef.current) {
+          window.setTimeout(() => {
+            if (continuousModeRef.current && continuousSessionActiveRef.current && !listeningRef.current) {
+              void startMicCapture();
+            }
+          }, 280);
+        }
+      },
+      onError: (message) => {
+        stopMicCapture(false);
+        continuousSessionActiveRef.current = false;
+        awaitingTurnCompletionRef.current = false;
+        setLiveStatus('OFFLINE');
+        setIsAiResponding(false);
+        setRespondingTopic('');
+        setMessages(prev => [
+          ...prev,
+          {
+            role: 'ai',
+            text: `Live session error: ${message}`,
+            time: new Date().toLocaleTimeString(),
+          },
+        ]);
+      },
+      onClose: () => {
+        stopMicCapture(false);
+        continuousSessionActiveRef.current = false;
+        awaitingTurnCompletionRef.current = false;
+        setLiveStatus('OFFLINE');
+      },
+    });
+
+    liveClientRef.current = liveClient;
+    try {
+      await liveClient.connect({
+        dashboard_context: dashboardContext,
+        voice_name: 'Zephyr',
+      });
+      return true;
+    } catch (error) {
+      setLiveStatus('OFFLINE');
+      console.warn('[VoiceAI Debug] Live websocket connect failed', error);
+      return false;
+    }
+  };
+
+  const ensureLiveSession = async (): Promise<boolean> => {
+    if (liveClientRef.current?.isConnected()) return true;
+    return connectLiveSession(true);
+  };
+
+  const startMicCapture = async () => {
+    setAssistantMode('voice');
+
+    const connected = await ensureLiveSession();
+    if (!connected) {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'ai',
+          text: 'Cannot start live mic because websocket session is offline. Use typed query fallback.',
+          time: new Date().toLocaleTimeString(),
+        },
+      ]);
+      return;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const context = new AudioContext();
+    const source = context.createMediaStreamSource(stream);
+    const processor = context.createScriptProcessor(4096, 1, 1);
+    const muteGain = context.createGain();
+    muteGain.gain.value = 0;
+
+    source.connect(processor);
+    processor.connect(muteGain);
+    muteGain.connect(context.destination);
+
+    mediaStreamRef.current = stream;
+    micContextRef.current = context;
+    micSourceRef.current = source;
+    micProcessorRef.current = processor;
+    micMuteGainRef.current = muteGain;
+
+    speechDetectedRef.current = false;
+    lastSpeechAtRef.current = Date.now();
+    awaitingTurnCompletionRef.current = false;
+
+    processor.onaudioprocess = (event) => {
+      if (!liveClientRef.current?.isConnected() || awaitingTurnCompletionRef.current) return;
+      const inputData = event.inputBuffer.getChannelData(0);
+
+      let sumSquares = 0;
+      for (let i = 0; i < inputData.length; i += 1) {
+        sumSquares += inputData[i] * inputData[i];
+      }
+      const rms = Math.sqrt(sumSquares / Math.max(inputData.length, 1));
+      const now = Date.now();
+
+      if (rms > SPEECH_RMS_THRESHOLD) {
+        speechDetectedRef.current = true;
+        lastSpeechAtRef.current = now;
+      }
+
+      const base64Pcm = float32ToPcm16Base64(inputData, context.sampleRate, 16000);
+      liveClientRef.current.sendAudioChunk(base64Pcm);
+
+      const silenceMs = now - lastSpeechAtRef.current;
+      if (
+        speechDetectedRef.current
+        && silenceMs > END_TURN_SILENCE_MS
+      ) {
+        stopMicCapture(true);
+      }
+    };
+
+    currentTurnUserQueryRef.current = 'live microphone query';
+    assistantDraftIndexRef.current = null;
+    assistantDraftTextRef.current = '';
+    assistantTurnHadAudioRef.current = false;
+
+    setMessages(prev => [
+      ...prev,
+      {
+        role: 'user',
+        text: '[Microphone stream started] Speak now. Cyna will reply automatically when you pause.',
+        time: new Date().toLocaleTimeString(),
+      },
+    ]);
+
+    setListening(true);
+    setVoiceQuery('live microphone query');
+    setIsAiResponding(false);
+  };
+
+  useEffect(() => {
+    void connectLiveSession(false);
+
+    return () => {
+      continuousSessionActiveRef.current = false;
+      awaitingTurnCompletionRef.current = false;
+      stopMicCapture(false);
+      liveClientRef.current?.close('component_unmount');
+      liveClientRef.current = null;
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      if (playbackContextRef.current) {
+        void playbackContextRef.current.close();
+        playbackContextRef.current = null;
+      }
+    };
+  }, []);
+
   const sendMessage = async (text: string) => {
     const query = text.trim();
     if (!query || isAiResponding) return;
 
-    const userMsg: Message = { role: 'user', text: query, time: new Date().toLocaleTimeString() };
+    if (assistantMode !== 'chat') {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'ai',
+          text: 'Direct Voice mode is mic-only. Switch to Smart Chat to send typed queries.',
+          time: new Date().toLocaleTimeString(),
+        },
+      ]);
+      return;
+    }
+
+    const stateSnapshot = storeState();
+    const requestedAlert = findRequestedAlert(query, stateSnapshot.alerts);
+    if (requestedAlert) {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'user',
+          text: query,
+          time: new Date().toLocaleTimeString(),
+        },
+        {
+          role: 'ai',
+          text: `Opening alert ${requestedAlert.id} in Alerts System now.`,
+          time: new Date().toLocaleTimeString(),
+        },
+      ]);
+      navigate('/alerts', { state: { openAlertId: requestedAlert.id, source: 'cyna' } });
+      setVoiceOpen(false);
+      setInput('');
+      return;
+    }
+
+    rememberUserInput(query);
+
     setVoiceQuery(query);
-    setMessages(prev => [...prev, userMsg]);
+    setMessages(prev => [
+      ...prev,
+      {
+        role: 'user',
+        text: query,
+        time: new Date().toLocaleTimeString(),
+      },
+    ]);
     setInput('');
-    setIsAiResponding(true);
     setRespondingTopic(query);
 
+    const dashboardContext = buildDashboardContext(storeState(), conversationContext());
+
+    setIsAiResponding(true);
     try {
-      console.info('[VoiceAI Debug] Gemini request started', { topic: query, maxItems: 15 });
+      const result = await askVoiceAssistant(query, dashboardContext, 'chat');
+      const outputText = (result.reply || '').trim();
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'ai',
+          text: outputText,
+          time: new Date().toLocaleTimeString(),
+        },
+      ]);
 
-      const timeoutMs = 20000;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error(`Gemini response timeout after ${timeoutMs}ms`)), timeoutMs);
+      void persistVoiceTranscript({
+        userId: storeState().user?.uid,
+        topic: dashboardContext.topic,
+        query,
+        reply: result.reply,
+        provider: 'ai',
+        model: 'runtime',
+        mode: 'chat_runtime',
+      }).catch((persistError) => {
+        console.warn('[Firebase] Failed to persist fallback endpoint transcript', { persistError });
       });
-
-      const result = await Promise.race([runTopic(query, 15), timeoutPromise]);
-
-      console.info('[VoiceAI Debug] backend analysis success', {
-        topic: query,
-        mode: result.meta?.mode,
-        reason: result.meta?.reason,
-        model: result.meta?.model,
-        alerts: result.alerts.length,
-      });
-
-      const aiMsg: Message = {
-        role: 'ai',
-        text: formatBackendReply(result),
-        time: new Date().toLocaleTimeString(),
-      };
-      setMessages(prev => [...prev, aiMsg]);
     } catch (error) {
-      console.error('[VoiceAI Debug] backend analysis failed; using local fallback', { topic: query, error });
       const state = storeState();
-      const response = getAIResponse(query, { ...state, voiceQuery: query });
-      const aiMsg: Message = {
-        role: 'ai',
-        text: `${response} Debug: backend AI request failed, local assistant fallback used.`,
-        time: new Date().toLocaleTimeString(),
-      };
-      setMessages(prev => [...prev, aiMsg]);
+      const fallbackResponse = getLocalSmartChatFallbackResponse(query, { ...state, voiceQuery: query });
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'ai',
+          text: `${fallbackResponse}\n\nNote: live and backend AI chat endpoints were unavailable, so local fallback was used.`,
+          time: new Date().toLocaleTimeString(),
+        },
+      ]);
+
+      void persistVoiceTranscript({
+        userId: state.user?.uid,
+        topic: dashboardContext.topic,
+        query,
+        reply: fallbackResponse,
+        provider: 'fallback',
+        model: 'local-canned',
+        mode: 'chat_browser_fallback',
+      }).catch((persistError) => {
+        console.warn('[Firebase] Failed to persist local fallback transcript', { persistError });
+      });
+
+      console.warn('[VoiceAI Debug] Fallback reply used', error);
     } finally {
       setIsAiResponding(false);
       setRespondingTopic('');
-      console.info('[VoiceAI Debug] Gemini request finished');
     }
   };
 
-  const toggleListening = () => {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      sendMessage('[Voice not supported — type your query above]');
-      return;
-    }
-
+  const toggleListening = async () => {
     if (listening) {
-      recognitionRef.current?.stop();
-      setListening(false);
+      continuousSessionActiveRef.current = false;
+      stopMicCapture(true);
       return;
     }
 
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'en-IN';
-    recognition.interimResults = false;
-    recognitionRef.current = recognition;
-
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const transcript = event.results[0][0].transcript;
-      sendMessage(transcript);
-    };
-    recognition.onend = () => setListening(false);
-    recognition.start();
-    setListening(true);
+    try {
+      continuousSessionActiveRef.current = continuousModeRef.current;
+      await startMicCapture();
+    } catch (error) {
+      continuousSessionActiveRef.current = false;
+      setListening(false);
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'ai',
+          text: `Could not access microphone for live session: ${String(error)}`,
+          time: new Date().toLocaleTimeString(),
+        },
+      ]);
+    }
   };
 
-  const quickCommands = ['Show high risk alerts', 'Status overview', 'Mumbai incidents', 'Pipeline status'];
+  const quickCommands = [
+    'Explain current high risk pattern',
+    'Create a short risk diagram for Mumbai',
+    'What will happen in next 2 hours?',
+    'Open latest alert',
+  ];
+  const isChatMode = assistantMode === 'chat';
+  const assistantStatus = listening
+    ? 'Listening and streaming microphone audio...'
+    : isAiResponding
+      ? `${isChatMode ? 'Smart Chat is analyzing' : 'Cyna is responding'}${respondingTopic ? ` (${respondingTopic})` : ''}`
+      : isChatMode
+        ? 'Smart Chat mode: structured and diagram-style tactical responses.'
+        : liveStatus === 'LIVE'
+          ? (continuousMode ? 'Realtime voice connected. Continuous flow active.' : 'Realtime voice channel connected.')
+          : liveStatus === 'CONNECTING'
+            ? 'Connecting voice channel...'
+            : 'Voice channel offline. Direct voice will be unavailable.';
 
   return (
     <div className="voice-panel">
@@ -177,22 +755,50 @@ export default function VoiceAssistantDialog() {
         <div
           id="voice-mic-btn"
           className={`voice-mic${listening ? ' listening' : ''}`}
-          onClick={toggleListening}
+          onClick={() => void toggleListening()}
           style={{ cursor: 'pointer', userSelect: 'none' }}
-          title={listening ? 'Stop listening' : 'Start voice input'}
+          title={listening ? 'Stop live microphone stream' : 'Start live microphone stream'}
         >
           🎙
         </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 12, fontWeight: 700 }}>Voice AI Assistant</div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            {listening
-              ? 'Listening...'
-              : isAiResponding
-                ? `Gemini is typing... ${respondingTopic ? `(${respondingTopic})` : ''}`
-                : 'Powered by Gemini'}
-          </div>
+        <div className="voice-header-copy">
+          <div className="voice-header-title">Cyna {isChatMode ? 'Smart Chat' : 'Direct Voice'}</div>
+          <div className="voice-header-status">{assistantStatus}</div>
         </div>
+        <div className="voice-mode-switch" role="tablist" aria-label="Assistant mode">
+          <button
+            className={`voice-mode-btn${isChatMode ? ' active' : ''}`}
+            onClick={() => setAssistantMode('chat')}
+            disabled={listening || isAiResponding}
+            title="Smart chat mode"
+          >
+            Smart Chat
+          </button>
+          <button
+            className={`voice-mode-btn${!isChatMode ? ' active' : ''}`}
+            onClick={() => setAssistantMode('voice')}
+            disabled={isAiResponding}
+            title="Direct voice mode"
+          >
+            Direct Voice
+          </button>
+        </div>
+        {!isChatMode && (
+          <button
+            id="voice-continuous-btn"
+            className={`btn btn-ghost btn-xs voice-continuous-btn${continuousMode ? ' active' : ''}`}
+            onClick={() => {
+              const next = !continuousMode;
+              setContinuousMode(next);
+              if (!next) {
+                continuousSessionActiveRef.current = false;
+              }
+            }}
+            title={continuousMode ? 'Continuous flow enabled' : 'Continuous flow disabled'}
+          >
+            {continuousMode ? 'Continuous On' : 'Continuous Off'}
+          </button>
+        )}
         <button
           id="voice-close-btn"
           className="btn btn-ghost btn-xs"
@@ -207,13 +813,13 @@ export default function VoiceAssistantDialog() {
         {messages.map((msg, idx) => (
           <div key={idx} className={`voice-msg ${msg.role}`}>
             {msg.text}
-            <div style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 3 }}>{msg.time}</div>
+            <div className="voice-msg-time">{msg.time}</div>
           </div>
         ))}
 
         {isAiResponding && (
           <div className="voice-msg ai voice-typing-row">
-            <span className="typing-label">Gemini is typing</span>
+            <span className="typing-label">{isChatMode ? 'Smart Chat is responding' : 'Live AI responding'}</span>
             <span className="typing-dots" aria-hidden="true">
               <span className="typing-dot" />
               <span className="typing-dot" />
@@ -225,45 +831,46 @@ export default function VoiceAssistantDialog() {
         <div ref={messagesEndRef} />
       </div>
 
-      <div style={{ padding: '6px 14px', display: 'flex', gap: 6, flexWrap: 'wrap', borderTop: '1px solid var(--border-subtle)' }}>
-        {quickCommands.map(cmd => (
-          <button
-            key={cmd}
-            className="btn btn-ghost"
-            style={{ padding: '3px 8px', fontSize: 9, letterSpacing: '0.3px' }}
-            onClick={() => sendMessage(cmd)}
-            disabled={isAiResponding}
-          >
-            {cmd}
-          </button>
-        ))}
-      </div>
+      {isChatMode && (
+        <div className="voice-quick-actions">
+          {quickCommands.map(cmd => (
+            <button
+              key={cmd}
+              className="btn btn-ghost voice-quick-btn"
+              onClick={() => void sendMessage(cmd)}
+              disabled={isAiResponding || listening}
+            >
+              {cmd}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="voice-input-row">
         <input
           id="voice-text-input"
           className="voice-text-input"
-          placeholder="Ask about alerts, locations, risk levels..."
+          placeholder={isChatMode ? 'Ask Cyna for smart analysis and diagram-style insights...' : 'Direct Voice mode is mic-only'}
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && sendMessage(input)}
-          disabled={isAiResponding}
+          onKeyDown={e => e.key === 'Enter' && void sendMessage(input)}
+          disabled={isAiResponding || listening || !isChatMode}
         />
         <button
           id="voice-send-btn"
           className="voice-send-btn"
-          onClick={() => sendMessage(input)}
+          onClick={() => void sendMessage(input)}
           title="Send"
-          disabled={isAiResponding}
+          disabled={isAiResponding || listening || !isChatMode}
         >
           {isAiResponding ? '…' : '➤'}
         </button>
         <button
           id="voice-mic-input-btn"
           className="btn btn-ghost btn-xs"
-          onClick={toggleListening}
+          onClick={() => void toggleListening()}
           style={{ padding: '4px 8px', fontSize: 14, color: listening ? 'var(--risk-high)' : 'var(--text-muted)' }}
-          title="Voice input"
+          title={listening ? 'Stop live microphone stream' : 'Start live microphone stream'}
         >
           🎙
         </button>

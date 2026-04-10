@@ -35,41 +35,61 @@ class CrewReporter:
                 {"mode": "empty"},
             )
 
-        prompt = self._build_prompt(topic=topic, alerts=alerts)
+        gemini_prompt = self._build_prompt(topic=topic, alerts=alerts)
+        ollama_prompt = self._build_ollama_prompt(topic=topic, alerts=alerts)
 
-        gemini_reason = ""
-        if genai is None:
-            gemini_reason = "gemini_sdk_missing"
-            logger.warning("Gemini SDK unavailable; skipping Gemini mode topic=%s", topic)
-        elif not self.settings.gemini_api_key:
-            gemini_reason = "missing_gemini_key"
-            logger.info("Gemini key missing; skipping Gemini mode topic=%s", topic)
-        else:
-            gemini_text, gemini_meta = self._generate_with_gemini(topic=topic, alerts=alerts, prompt=prompt)
+        provider_order = self.settings.reasoning_provider_order()
+        gemini_reason = "not_attempted"
+        ollama_reason = "not_attempted"
+        gemini_model_errors = ""
+        ollama_model_errors = ""
+
+        for provider in provider_order:
+            if provider == "ollama":
+                ollama_text, ollama_meta = self._generate_with_ollama(topic=topic, alerts=alerts, query=ollama_prompt)
+                if ollama_text:
+                    return ollama_text, ollama_meta
+
+                ollama_reason = ollama_meta.get("reason", "ollama_runtime_error")
+                ollama_model_errors = ollama_meta.get("model_errors", "")
+                continue
+
+            if genai is None:
+                gemini_reason = "gemini_sdk_missing"
+                logger.warning("Gemini SDK unavailable; skipping Gemini mode topic=%s", topic)
+                continue
+
+            if not self.settings.gemini_api_key:
+                gemini_reason = "missing_gemini_key"
+                logger.info("Gemini key missing; skipping Gemini mode topic=%s", topic)
+                continue
+
+            gemini_text, gemini_meta = self._generate_with_gemini(topic=topic, alerts=alerts, prompt=gemini_prompt)
             if gemini_text:
                 return gemini_text, gemini_meta
-            gemini_reason = gemini_meta.get("reason", "gemini_runtime_error")
 
-        ollama_prompt = self._build_ollama_prompt(topic=topic, alerts=alerts)
-        ollama_text, ollama_meta = self._generate_with_ollama(topic=topic, alerts=alerts, query=ollama_prompt)
-        if ollama_text:
-            return ollama_text, ollama_meta
+            gemini_reason = gemini_meta.get("reason", "gemini_runtime_error")
+            gemini_model_errors = gemini_meta.get("model_errors", "")
 
         logger.warning(
-            "All AI providers failed topic=%s gemini_reason=%s ollama_reason=%s",
+            "All AI providers failed topic=%s provider_order=%s gemini_reason=%s ollama_reason=%s",
             topic,
-            gemini_reason or "none",
-            ollama_meta.get("reason", "none"),
+            "->".join(provider_order),
+            gemini_reason,
+            ollama_reason,
         )
 
         fallback_meta = {
             "mode": "fallback",
             "reason": "all_ai_providers_failed",
-            "gemini_reason": gemini_reason or "not_attempted",
-            "ollama_reason": ollama_meta.get("reason", "unknown"),
+            "provider_order": "->".join(provider_order),
+            "gemini_reason": gemini_reason,
+            "ollama_reason": ollama_reason,
         }
-        if ollama_meta.get("model_errors"):
-            fallback_meta["model_errors"] = ollama_meta["model_errors"]
+        if gemini_model_errors:
+            fallback_meta["gemini_model_errors"] = gemini_model_errors
+        if ollama_model_errors:
+            fallback_meta["ollama_model_errors"] = ollama_model_errors
         return self._fallback_report(topic, alerts), fallback_meta
 
     def _generate_with_gemini(self, topic: str, alerts: list[AlertOut], prompt: str) -> tuple[str | None, dict[str, str]]:

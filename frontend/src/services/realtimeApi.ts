@@ -77,6 +77,83 @@ export interface UIRunResult {
   meta: Record<string, unknown>;
 }
 
+export interface VoiceAssistantResult {
+  reply: string;
+  provider: 'gemini' | 'ollama' | 'fallback';
+  model: string;
+  mode: string;
+  generatedAt: Date;
+}
+
+export type AssistantMode = 'chat' | 'voice';
+
+export interface VoiceDashboardContext {
+  topic: string;
+  city: string;
+  stats: {
+    totalAlerts: number;
+    activeAlerts: number;
+    highRisk: number;
+    mediumRisk: number;
+    lowRisk: number;
+    avgConfidence: number;
+    topLocation: string;
+  };
+  pipeline: {
+    isRunning: boolean;
+    activeNode: string;
+    modelMode: string;
+    modelName: string;
+  };
+  topAlerts: Array<{
+    id: string;
+    title: string;
+    location: string;
+    riskLevel: string;
+    confidence: number;
+    status: string;
+  }>;
+  recentAlerts?: Array<{
+    id: string;
+    title: string;
+    summary: string;
+    location: string;
+    riskLevel: string;
+    status: string;
+    category: string;
+    sentiment: string;
+    confidence: number;
+    escalationProbability: number;
+    keywords: string[];
+    createdAt: string;
+  }>;
+  categoryBreakdown?: Array<{
+    category: string;
+    total: number;
+    active: number;
+    highRisk: number;
+  }>;
+  locationBreakdown?: Array<{
+    location: string;
+    total: number;
+    active: number;
+    highRisk: number;
+  }>;
+  pipelineStages?: Array<{
+    id: string;
+    name: string;
+    status: string;
+    itemsProcessed: number;
+    processingTime: number;
+  }>;
+  latestReportSnippet: string;
+  conversation?: {
+    recentUserQueries: string[];
+    userTerms: string[];
+    continuousMode: boolean;
+  };
+}
+
 const STAGE_ICONS: Record<BackendStage['id'], string> = {
   collector: '📡',
   cleaner: '🧹',
@@ -219,12 +296,12 @@ export async function runTopic(topic: string, maxItems = 20, city?: CityScope): 
     model: json.meta?.model,
   });
 
-  if (mode !== 'gemini') {
+  if (mode === 'fallback') {
     console.warn('[RealtimeDebug] backend returned fallback mode', {
       topic: mapped.topic,
       mode,
       reason: json.meta?.reason,
-      modelErrors: json.meta?.model_errors,
+      modelErrors: json.meta?.model_errors ?? json.meta?.ollama_model_errors ?? json.meta?.gemini_model_errors,
     });
   }
 
@@ -277,12 +354,12 @@ export function streamTopic(topic: string, maxItems: number, handlers: StreamHan
         model: data.meta?.model,
       });
 
-      if (mode !== 'gemini') {
+      if (mode === 'fallback') {
         console.warn('[RealtimeDebug] stream result fallback mode', {
           topic,
           mode,
           reason: data.meta?.reason,
-          modelErrors: data.meta?.model_errors,
+          modelErrors: data.meta?.model_errors ?? data.meta?.ollama_model_errors ?? data.meta?.gemini_model_errors,
         });
       }
 
@@ -323,4 +400,50 @@ export function streamTopic(topic: string, maxItems: number, handlers: StreamHan
   });
 
   return () => stream.close();
+}
+
+export async function askVoiceAssistant(
+  query: string,
+  dashboardContext: VoiceDashboardContext,
+  assistantMode: AssistantMode = 'voice',
+): Promise<VoiceAssistantResult> {
+  const requestUrl = `${API_BASE}/api/voice/assistant`;
+  logDebugReport('voiceAssistant.request', {
+    query,
+    requestUrl,
+    city: dashboardContext.city,
+    topic: dashboardContext.topic,
+    assistantMode,
+  });
+
+  const response = await fetch(requestUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query,
+      dashboard_context: dashboardContext,
+      mode: assistantMode,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Voice assistant failed: ${response.status} ${detail}`);
+  }
+
+  const json = (await response.json()) as {
+    reply: string;
+    provider: 'gemini' | 'ollama' | 'fallback';
+    model: string;
+    mode: string;
+    generated_at: string;
+  };
+
+  return {
+    reply: json.reply,
+    provider: json.provider,
+    model: json.model,
+    mode: json.mode,
+    generatedAt: toDate(json.generated_at),
+  };
 }

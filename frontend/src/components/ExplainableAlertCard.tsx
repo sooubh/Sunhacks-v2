@@ -1,17 +1,30 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Alert } from '../types';
 import { format } from 'date-fns';
 import AlertInsightModal from './AlertInsightModal.tsx';
 
-interface Props { alert: Alert; }
+interface Props {
+  alert: Alert;
+  autoOpen?: boolean;
+  onAutoOpenHandled?: () => void;
+}
 
 function previewSummary(text: string, maxLen = 148): string {
   if (text.length <= maxLen) return text;
   return `${text.slice(0, maxLen).trimEnd()}...`;
 }
 
-export default function ExplainableAlertCard({ alert }: Props) {
+export default function ExplainableAlertCard({ alert, autoOpen = false, onAutoOpenHandled }: Props) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!autoOpen) return;
+
+    setIsModalOpen(true);
+    const element = document.getElementById(`alert-card-${alert.id}`);
+    element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    onAutoOpenHandled?.();
+  }, [alert.id, autoOpen, onAutoOpenHandled]);
 
   const riskColor = {
     HIGH:   'var(--risk-high)',

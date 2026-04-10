@@ -43,6 +43,8 @@ class Settings:
     tavily_recent_days: int
     gemini_api_key: str
     gemini_model: str
+    gemini_live_model: str
+    ai_reasoning_provider_order: str
     ollama_enabled: bool
     ollama_base_url: str
     ollama_route: str
@@ -74,6 +76,8 @@ class Settings:
             tavily_recent_days=int(os.getenv("TAVILY_RECENT_DAYS", "3")),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-flash-latest").strip(),
+            gemini_live_model=os.getenv("GEMINI_LIVE_MODEL", "models/gemini-3.1-flash-live-preview").strip(),
+            ai_reasoning_provider_order=os.getenv("AI_REASONING_PROVIDER_ORDER", "ollama_first").strip().lower(),
             ollama_enabled=_env_bool("OLLAMA_ENABLED", True),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/"),
             ollama_route=os.getenv("OLLAMA_ROUTE", "deep").strip().lower(),
@@ -90,3 +94,14 @@ class Settings:
         if self.cors_allow_origins == "*":
             return ["*"]
         return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
+
+    def reasoning_provider_order(self) -> tuple[str, ...]:
+        mode = (self.ai_reasoning_provider_order or "").strip().lower()
+
+        if mode in {"ollama_only", "local_only"}:
+            return ("ollama",)
+        if mode == "gemini_first":
+            return ("gemini", "ollama")
+        if mode == "gemini_only":
+            return ("gemini",)
+        return ("ollama", "gemini")

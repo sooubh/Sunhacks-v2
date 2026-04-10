@@ -14,6 +14,20 @@ class TopicRequest(BaseModel):
     city: CityName | None = None
 
 
+class VoiceAssistantRequest(BaseModel):
+    query: str = Field(..., min_length=2, max_length=360)
+    dashboard_context: dict[str, Any] = Field(default_factory=dict)
+    mode: Literal["chat", "voice"] = "voice"
+
+
+class VoiceAssistantResponse(BaseModel):
+    reply: str
+    provider: Literal["gemini", "ollama", "fallback"]
+    model: str
+    mode: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class SourceSignal(BaseModel):
     id: str
     source_name: str

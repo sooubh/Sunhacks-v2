@@ -4,6 +4,7 @@ import { format } from 'date-fns';
 import { jsPDF } from 'jspdf';
 import type { Alert } from '../types';
 import { useAppStore } from '../store/useAppStore';
+import { CITY_COORDS, getCityFromLocation } from '../config/cities';
 
 interface AlertInsightModalProps {
   alert: Alert | null;
@@ -13,6 +14,12 @@ interface AlertInsightModalProps {
   onNext?: () => void;
   currentIndex?: number;
   totalCount?: number;
+}
+
+interface ScenarioMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  time: string;
 }
 
 function getCivilianImpact(alert: Alert): 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' {
@@ -139,6 +146,22 @@ function buildWhatIfResponse(alert: Alert, query: string): string {
   ].join(' ');
 }
 
+function buildMapEmbedUrl(lat: number, lng: number): string {
+  const delta = 0.2;
+  const left = lng - delta;
+  const right = lng + delta;
+  const top = lat + delta;
+  const bottom = lat - delta;
+
+  const params = new URLSearchParams({
+    bbox: `${left},${bottom},${right},${top}`,
+    layer: 'mapnik',
+    marker: `${lat},${lng}`,
+  });
+
+  return `https://www.openstreetmap.org/export/embed.html?${params.toString()}`;
+}
+
 export default function AlertInsightModal({
   alert,
   isOpen,
@@ -152,12 +175,26 @@ export default function AlertInsightModal({
   const [actionMessage, setActionMessage] = useState('');
   const [scenarioPrompt, setScenarioPrompt] = useState('');
   const [scenarioResult, setScenarioResult] = useState('');
+  const [scenarioMessages, setScenarioMessages] = useState<ScenarioMessage[]>([
+    {
+      role: 'assistant',
+      text: 'Ask a what-if question and I will simulate escalation and likely outcomes for this alert.',
+      time: format(new Date(), 'HH:mm:ss'),
+    },
+  ]);
 
   useEffect(() => {
     if (!isOpen || !alert) return;
     setActionMessage('');
     setScenarioPrompt('');
     setScenarioResult('');
+    setScenarioMessages([
+      {
+        role: 'assistant',
+        text: 'Ask a what-if question and I will simulate escalation and likely outcomes for this alert.',
+        time: format(new Date(), 'HH:mm:ss'),
+      },
+    ]);
   }, [isOpen, alert?.id]);
 
   if (!isOpen || !alert) return null;
@@ -174,6 +211,11 @@ export default function AlertInsightModal({
       ...alert.entities.filter(entity => entity.type === 'LOCATION').map(entity => entity.name),
     ]),
   );
+
+  const scopedCity = getCityFromLocation(alert.location);
+  const fallbackCoords = scopedCity ? CITY_COORDS[scopedCity] : { lat: 20.5937, lng: 78.9629 };
+  const mapCenter = alert.coordinates ?? fallbackCoords;
+  const mapEmbedUrl = buildMapEmbedUrl(mapCenter.lat, mapCenter.lng);
 
   const dataSnapshot: Array<{ label: string; value: string }> = [
     { label: 'Alert ID', value: alert.id },
@@ -400,7 +442,22 @@ export default function AlertInsightModal({
       setScenarioResult('Enter a what-if question to generate a scenario prediction.');
       return;
     }
-    setScenarioResult(buildWhatIfResponse(alert, prompt));
+
+    const forecast = buildWhatIfResponse(alert, prompt);
+    setScenarioResult(forecast);
+    setScenarioMessages(prev => [
+      ...prev,
+      {
+        role: 'user',
+        text: prompt,
+        time: format(new Date(), 'HH:mm:ss'),
+      },
+      {
+        role: 'assistant',
+        text: forecast,
+        time: format(new Date(), 'HH:mm:ss'),
+      },
+    ]);
   };
 
   const modalContent = (
@@ -547,6 +604,23 @@ export default function AlertInsightModal({
             </div>
 
             <div className="alert-modal-block">
+              <div className="alert-section-label">Live Alert Map</div>
+              <div className="alert-map-frame-wrap mt-8">
+                <iframe
+                  className="alert-map-frame"
+                  src={mapEmbedUrl}
+                  title={`Map for ${alert.location}`}
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                />
+              </div>
+              <div className="alert-map-meta-row">
+                <span>Location: <strong>{alert.location}</strong></span>
+                <span>Coordinates: <strong>{mapCenter.lat.toFixed(4)}, {mapCenter.lng.toFixed(4)}</strong></span>
+              </div>
+            </div>
+
+            <div className="alert-modal-block">
               <div className="alert-section-label">Assessed Areas</div>
               <div className="entity-row mt-8">
                 {assessedAreas.map((area) => (
@@ -594,6 +668,15 @@ export default function AlertInsightModal({
 
             <div className="alert-modal-block">
               <div className="alert-section-label">Scenario Predictor · What-if Chatbot</div>
+              <div className="scenario-chat-log">
+                {scenarioMessages.map((message, index) => (
+                  <div key={`${alert.id}-scenario-msg-${index}`} className={`scenario-chat-msg ${message.role}`}>
+                    <div>{message.text}</div>
+                    <div className="scenario-chat-time">{message.time}</div>
+                  </div>
+                ))}
+              </div>
+
               <div className="scenario-quick-row">
                 <button className="scenario-chip" onClick={() => setScenarioPrompt('What if this incident spreads to nearby districts in next 12 hours?')}>Spread Scenario</button>
                 <button className="scenario-chip" onClick={() => setScenarioPrompt('What if misinformation around this event goes viral tonight?')}>Misinformation Scenario</button>
@@ -613,6 +696,13 @@ export default function AlertInsightModal({
                   onClick={() => {
                     setScenarioPrompt('');
                     setScenarioResult('');
+                    setScenarioMessages([
+                      {
+                        role: 'assistant',
+                        text: 'Ask a what-if question and I will simulate escalation and likely outcomes for this alert.',
+                        time: format(new Date(), 'HH:mm:ss'),
+                      },
+                    ]);
                   }}
                 >
                   Clear

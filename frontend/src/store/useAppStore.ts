@@ -2,10 +2,33 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Alert, AlertStatus, DashboardStats, FilterType, PipelineStage, RiskLevel, AuditLog, User } from '../types';
 import { generateMockAlerts, generateMockAuditLogs, generateMockPipelineStages } from '../services/mockData';
-import { runTopic, streamTopic } from '../services/realtimeApi';
+import { runTopic, streamTopic, type UIRunResult } from '../services/realtimeApi';
+import { persistAlertUpdates, persistDashboardSnapshot, persistPipelineRun } from '../services/firebaseDataService';
 import { CITY_OPTIONS, normalizeCityScope, type CityScope } from '../config/cities';
 
-type PipelineModelMode = 'unknown' | 'gemini' | 'fallback';
+type PipelineModelMode = 'unknown' | 'ollama' | 'gemini' | 'fallback';
+
+interface AutoAgentReport {
+  id: string;
+  city: CityScope;
+  topic: string;
+  report: string;
+  mode: PipelineModelMode;
+  modelName: string;
+  alertsFound: number;
+  generatedAt: Date;
+}
+
+const AUTO_AGENT_INTERVAL_MINUTES = 10;
+const AUTO_AGENT_INTERVAL_MS = AUTO_AGENT_INTERVAL_MINUTES * 60 * 1000;
+const AUTO_AGENT_CITIES: CityScope[] = [
+  CITY_OPTIONS[0],
+  CITY_OPTIONS[1],
+  CITY_OPTIONS[2],
+  CITY_OPTIONS[3],
+];
+
+let autoAgentIntervalId: number | null = null;
 
 interface AppState {
   // Auth
@@ -43,6 +66,10 @@ interface AppState {
   // Latest backend output
   latestReport: string;
   lastTopic: string;
+  autoAgentReports: AutoAgentReport[];
+  autoAgentLastRun: Date | null;
+  autoAgentIntervalMinutes: number;
+  isAutoAgentRunning: boolean;
 
   // Actions
   setUser: (user: User | null) => void;
@@ -55,6 +82,9 @@ interface AppState {
   setVoiceQuery: (q: string) => void;
   triggerCollect: () => Promise<void>;
   runPipeline: () => Promise<void>;
+  runAutoAgentCycle: () => Promise<void>;
+  startAutoAgentMonitoring: () => void;
+  stopAutoAgentMonitoring: () => void;
   updateAlertStatus: (id: string, status: AlertStatus) => void;
 }
 
@@ -147,6 +177,36 @@ function pushActivity(feed: string[], message: string): string[] {
   return [message, ...feed].slice(0, 14);
 }
 
+function normalizePipelineMode(value: unknown): PipelineModelMode {
+  const mode = String(value ?? 'unknown');
+  if (mode === 'ollama' || mode === 'gemini' || mode === 'fallback') return mode;
+  return 'unknown';
+}
+
+function modelConfigured(mode: PipelineModelMode): boolean {
+  return mode === 'ollama' || mode === 'gemini';
+}
+
+function alertFingerprint(alert: Alert): string {
+  return `${alert.title.toLowerCase()}|${alert.location.toLowerCase()}|${alert.category}`;
+}
+
+function buildAutoAgentReport(city: CityScope, result: UIRunResult): AutoAgentReport {
+  const mode = normalizePipelineMode(result.meta?.mode);
+  const modelName = String(result.meta?.model ?? 'Not detected');
+
+  return {
+    id: `${city.toLowerCase()}-${result.generatedAt.getTime()}`,
+    city,
+    topic: result.topic,
+    report: result.report,
+    mode,
+    modelName,
+    alertsFound: result.alerts.length,
+    generatedAt: result.generatedAt,
+  };
+}
+
 export const useAppStore = create<AppState>()(persist((set, get) => ({
   user: null,
   isAuthenticated: false,
@@ -168,8 +228,12 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   auditLogs: initialLogs,
   isVoiceOpen: false,
   voiceQuery: '',
-  latestReport: 'Run the pipeline to generate a Gemini intelligence briefing.',
+  latestReport: 'Run the pipeline to generate an AI intelligence briefing.',
   lastTopic: 'Not set',
+  autoAgentReports: [],
+  autoAgentLastRun: null,
+  autoAgentIntervalMinutes: AUTO_AGENT_INTERVAL_MINUTES,
+  isAutoAgentRunning: false,
 
   setUser: (user) => set({ user, isAuthenticated: !!user }),
   setFilter: (filter) => set({ activeFilter: filter }),
@@ -183,6 +247,14 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       );
       return { alerts, dashboardStats: computeStats(alerts) };
     });
+
+    const stateAfter = get();
+    const changed = stateAfter.alerts.find(alert => alert.id === id);
+    if (changed) {
+      void persistAlertUpdates(stateAfter.user?.uid, stateAfter.lastTopic || 'manual_alert_update', [changed]).catch((persistError) => {
+        console.warn('[Firebase] Failed to persist resolved alert', { id, persistError });
+      });
+    }
   },
 
   updateAlertStatus: (id, status) => {
@@ -192,12 +264,25 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
       );
       return { alerts, dashboardStats: computeStats(alerts) };
     });
+
+    const stateAfter = get();
+    const changed = stateAfter.alerts.find(alert => alert.id === id);
+    if (changed) {
+      void persistAlertUpdates(stateAfter.user?.uid, stateAfter.lastTopic || 'manual_alert_update', [changed]).catch((persistError) => {
+        console.warn('[Firebase] Failed to persist alert status update', { id, status, persistError });
+      });
+    }
   },
 
   addAlert: (alert) => {
     set(state => {
       const alerts = [alert, ...state.alerts];
       return { alerts, dashboardStats: computeStats(alerts) };
+    });
+
+    const stateAfter = get();
+    void persistAlertUpdates(stateAfter.user?.uid, stateAfter.lastTopic || 'manual_alert_add', [alert]).catch((persistError) => {
+      console.warn('[Firebase] Failed to persist added alert', { id: alert.id, persistError });
     });
   },
 
@@ -211,10 +296,11 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
 
     try {
       const result = await runTopic(topic, 20, city);
-      const mode = String(result.meta?.mode ?? 'unknown');
-      if (mode === 'gemini') {
-        console.info('[AI Debug] triggerCollect succeeded with Gemini mode', {
+      const mode = normalizePipelineMode(result.meta?.mode);
+      if (modelConfigured(mode)) {
+        console.info('[AI Debug] triggerCollect succeeded with AI mode', {
           topic,
+          mode,
           model: result.meta?.model,
           alerts: result.alerts.length,
         });
@@ -229,7 +315,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
 
       set(state => {
         const alerts = mergeAlerts(state.alerts, result.alerts);
-        const mode = String(result.meta?.mode ?? 'unknown');
+        const mode = normalizePipelineMode(result.meta?.mode);
         const model = String(result.meta?.model ?? 'Not detected');
         const reason = String(result.meta?.reason ?? '');
         return {
@@ -237,15 +323,43 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           alerts,
           dashboardStats: computeStats(alerts),
           pipelineStages: result.stages,
-          pipelineModelMode: mode === 'gemini' ? 'gemini' : 'fallback',
+          pipelineModelMode: mode,
           pipelineModelName: model,
-          pipelineModelReason: mode === 'gemini'
+          pipelineModelReason: modelConfigured(mode)
             ? `Model configured successfully (${model}).`
             : (reason || 'Backend returned fallback mode. Verify API keys and model access.'),
           auditLogs: generateMockAuditLogs(alerts).slice(0, 120),
           latestReport: result.report,
           lastTopic: result.topic,
         };
+      });
+
+      const stateAfter = get();
+      const modelName = String(result.meta?.model ?? 'Not detected');
+      const modelReason = String(result.meta?.reason ?? '');
+      void Promise.all([
+        persistPipelineRun({
+          userId: stateAfter.user?.uid,
+          topic: result.topic,
+          report: result.report,
+          trigger: 'collect',
+          modelMode: mode,
+          modelName,
+          modelReason,
+          meta: result.meta,
+          stages: result.stages,
+          alerts: result.alerts,
+        }),
+        persistDashboardSnapshot({
+          userId: stateAfter.user?.uid,
+          city,
+          topic: result.topic,
+          modelMode: mode,
+          modelName,
+          stats: stateAfter.dashboardStats,
+        }),
+      ]).catch((persistError) => {
+        console.warn('[Firebase] Failed to persist collect artifacts', { topic, persistError });
       });
     } catch (error) {
       console.error('[AI Debug] triggerCollect backend failed, falling back to mock alerts', {
@@ -264,6 +378,157 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           dashboardStats: computeStats(alerts),
         };
       });
+    }
+  },
+
+  runAutoAgentCycle: async () => {
+    if (get().isAutoAgentRunning) {
+      return;
+    }
+
+    const stateBeforeRun = get();
+    const baseTopic = pickTopic(stateBeforeRun.searchQuery, stateBeforeRun.voiceQuery);
+    const knownAlertKeys = new Set(stateBeforeRun.alerts.map(alertFingerprint));
+    const reports: AutoAgentReport[] = [];
+    const collectedAlerts: Alert[] = [];
+    const persistenceJobs: Promise<void>[] = [];
+
+    set(state => ({
+      isAutoAgentRunning: true,
+      pipelineActivityFeed: pushActivity(
+        state.pipelineActivityFeed,
+        `Auto-monitor cycle started for ${AUTO_AGENT_CITIES.join(', ')}.`
+      ),
+    }));
+
+    try {
+      for (const city of AUTO_AGENT_CITIES) {
+        const topic = buildCityTopic(baseTopic, city);
+
+        try {
+          const result = await runTopic(topic, 20, city);
+          const mode = normalizePipelineMode(result.meta?.mode);
+          const modelName = String(result.meta?.model ?? 'Not detected');
+          const modelReason = String(result.meta?.reason ?? '');
+
+          if (modelConfigured(mode)) {
+            console.info('[AI Debug] auto monitor city cycle completed', {
+              city,
+              topic: result.topic,
+              mode,
+              modelName,
+              alerts: result.alerts.length,
+            });
+          } else {
+            console.warn('[AI Debug] auto monitor city cycle fallback', {
+              city,
+              topic: result.topic,
+              mode,
+              modelReason,
+              modelErrors: result.meta?.model_errors,
+            });
+          }
+
+          reports.push(buildAutoAgentReport(city, result));
+          collectedAlerts.push(...result.alerts);
+
+          persistenceJobs.push(
+            persistPipelineRun({
+              userId: stateBeforeRun.user?.uid,
+              topic: result.topic,
+              report: result.report,
+              trigger: 'auto-monitor',
+              modelMode: mode,
+              modelName,
+              modelReason,
+              meta: result.meta,
+              stages: result.stages,
+              alerts: result.alerts,
+            }),
+            persistDashboardSnapshot({
+              userId: stateBeforeRun.user?.uid,
+              city,
+              topic: result.topic,
+              modelMode: mode,
+              modelName,
+              stats: computeStats(result.alerts),
+            }),
+          );
+        } catch (error) {
+          console.error('[AI Debug] auto monitor city cycle failed', { city, topic, error });
+          reports.push({
+            id: `${city.toLowerCase()}-${Date.now()}-error`,
+            city,
+            topic,
+            report: `Auto monitor run failed for ${city}. ${String(error)}`,
+            mode: 'fallback',
+            modelName: 'Run failed',
+            alertsFound: 0,
+            generatedAt: new Date(),
+          });
+        }
+      }
+
+      if (persistenceJobs.length > 0) {
+        const persisted = await Promise.allSettled(persistenceJobs);
+        const failed = persisted.filter((entry) => entry.status === 'rejected').length;
+        if (failed > 0) {
+          console.warn('[Firebase] Auto monitor persistence had failures', { failed });
+        }
+      }
+
+      const freshAlerts = collectedAlerts.filter(alert => !knownAlertKeys.has(alertFingerprint(alert)));
+      const sortedReports = reports
+        .sort((a, b) => b.generatedAt.getTime() - a.generatedAt.getTime())
+        .slice(0, AUTO_AGENT_CITIES.length);
+      const featuredReport = sortedReports.find(report => report.alertsFound > 0) ?? sortedReports[0] ?? null;
+
+      set(state => {
+        const alerts = collectedAlerts.length > 0 ? mergeAlerts(state.alerts, collectedAlerts) : state.alerts;
+        return {
+          isAutoAgentRunning: false,
+          alerts,
+          dashboardStats: collectedAlerts.length > 0 ? computeStats(alerts) : state.dashboardStats,
+          autoAgentReports: sortedReports,
+          autoAgentLastRun: new Date(),
+          latestReport: featuredReport ? featuredReport.report : state.latestReport,
+          lastTopic: featuredReport ? featuredReport.topic : state.lastTopic,
+          pipelineActivityFeed: pushActivity(
+            state.pipelineActivityFeed,
+            freshAlerts.length > 0
+              ? `Auto-monitor found ${freshAlerts.length} new alerts across ${AUTO_AGENT_CITIES.length} city agents.`
+              : 'Auto-monitor completed with no new actionable alerts.'
+          ),
+        };
+      });
+    } catch (error) {
+      console.error('[AI Debug] auto monitor cycle failed', { error });
+      set(state => ({
+        isAutoAgentRunning: false,
+        pipelineActivityFeed: pushActivity(
+          state.pipelineActivityFeed,
+          `Auto-monitor failed: ${String(error)}`
+        ),
+      }));
+    }
+  },
+
+  startAutoAgentMonitoring: () => {
+    if (autoAgentIntervalId !== null) {
+      return;
+    }
+
+    autoAgentIntervalId = window.setInterval(() => {
+      void get().runAutoAgentCycle();
+    }, AUTO_AGENT_INTERVAL_MS);
+
+    void get().runAutoAgentCycle();
+  },
+
+  stopAutoAgentMonitoring: () => {
+    if (autoAgentIntervalId !== null) {
+      window.clearInterval(autoAgentIntervalId);
+      autoAgentIntervalId = null;
     }
   },
 
@@ -316,12 +581,13 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           }));
         },
         onResult: (result) => {
-          const mode = String(result.meta?.mode ?? 'unknown');
+          const mode = normalizePipelineMode(result.meta?.mode);
           const model = String(result.meta?.model ?? 'Not detected');
           const reason = String(result.meta?.reason ?? '');
-          if (mode === 'gemini') {
-            console.info('[AI Debug] runPipeline completed with Gemini mode', {
+          if (modelConfigured(mode)) {
+            console.info('[AI Debug] runPipeline completed with AI mode', {
               topic,
+              mode,
               model: result.meta?.model,
               alerts: result.alerts.length,
             });
@@ -341,19 +607,19 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
               alerts,
               dashboardStats: computeStats(alerts),
               pipelineStages: result.stages,
-              pipelineModelMode: mode === 'gemini' ? 'gemini' : 'fallback',
+              pipelineModelMode: mode,
               pipelineModelName: model,
-              pipelineModelReason: mode === 'gemini'
+              pipelineModelReason: modelConfigured(mode)
                 ? `Model configured successfully (${model}).`
                 : (reason || 'Backend returned fallback mode. Verify API keys and model access.'),
               pipelineActiveTopic: '',
               pipelineLiveNode: '',
-              pipelineLiveInsight: mode === 'gemini'
+              pipelineLiveInsight: modelConfigured(mode)
                 ? `Pipeline completed for "${result.topic}" with configured model.`
                 : `Pipeline completed in fallback mode for "${result.topic}".`,
               pipelineActivityFeed: pushActivity(
                 state.pipelineActivityFeed,
-                mode === 'gemini'
+                modelConfigured(mode)
                   ? `Completed with model ${model}.`
                   : `Completed in fallback mode${reason ? `: ${reason}` : '.'}`,
               ),
@@ -362,6 +628,33 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
               lastTopic: result.topic,
             };
           });
+
+          const stateAfter = get();
+          void Promise.all([
+            persistPipelineRun({
+              userId: stateAfter.user?.uid,
+              topic: result.topic,
+              report: result.report,
+              trigger: 'pipeline',
+              modelMode: mode,
+              modelName: model,
+              modelReason: reason,
+              meta: result.meta,
+              stages: result.stages,
+              alerts: result.alerts,
+            }),
+            persistDashboardSnapshot({
+              userId: stateAfter.user?.uid,
+              city,
+              topic: result.topic,
+              modelMode: mode,
+              modelName: model,
+              stats: stateAfter.dashboardStats,
+            }),
+          ]).catch((persistError) => {
+            console.warn('[Firebase] Failed to persist pipeline artifacts', { topic, persistError });
+          });
+
           close();
           finish();
         },
