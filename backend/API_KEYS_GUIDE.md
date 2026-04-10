@@ -18,8 +18,19 @@ This project supports partial keys. You can start with just one source and add m
   - Console: https://gnews.io
 
 - Gemini LLM report mode: set GEMINI_API_KEY
-  - Without this key, AI report falls back to deterministic summary mode.
+  - Without this key, backend will try Ollama route mode.
   - Optional model override: GEMINI_MODEL (default is gemini-flash-latest).
+
+- Ollama LLM report mode (external/local API)
+  - Optional: OLLAMA_ENABLED=true
+  - Optional: OLLAMA_BASE_URL=http://127.0.0.1:11434
+  - Optional route: OLLAMA_ROUTE=fast or deep
+  - OLLAMA_ROUTE behavior is fixed:
+    - fast -> mistral.invoke(query)
+    - otherwise -> llama.invoke(query)
+  - Optional model override: OLLAMA_LLAMA_MODEL=llama3:8b
+  - Optional model override: OLLAMA_MISTRAL_MODEL=mistral:7b
+  - If Gemini and Ollama both fail, backend uses deterministic fallback summary mode.
 
 - Web scraper source
   - No key required.

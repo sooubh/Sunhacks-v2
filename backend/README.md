@@ -7,7 +7,7 @@ Pipeline stages:
 - Cleaner: removes duplicate/noisy records.
 - Analyzer: infers category, sentiment, keywords, and location.
 - Predictor: computes risk, confidence, impact, escalation, and actions.
-- Reporter: generates final intelligence briefing with Gemini or deterministic fallback.
+- Reporter: generates final intelligence briefing with Gemini, then Ollama route mode, then deterministic fallback.
 
 ## Install
 
@@ -31,6 +31,11 @@ In `backend/.env`, fill keys as available:
 Useful options:
 - `TAVILY_RECENT_DAYS` (default `3`)
 - `GEMINI_MODEL` (default `gemini-flash-latest`)
+- `OLLAMA_ENABLED` (default `true`)
+- `OLLAMA_BASE_URL` (default `http://127.0.0.1:11434`)
+- `OLLAMA_ROUTE` (`fast` uses mistral, any other value uses llama)
+- `OLLAMA_LLAMA_MODEL` (default `llama3:8b`)
+- `OLLAMA_MISTRAL_MODEL` (default `mistral:7b`)
 - `CORS_ALLOW_ORIGINS` (default from env template)
 - `REQUEST_TIMEOUT_SECONDS`
 - `RSS_FEEDS`
@@ -38,6 +43,7 @@ Useful options:
 
 Minimum useful setup:
 - `NEWSAPI_KEY` or `TAVILY_API_KEY`
+- For AI summaries, either `GEMINI_API_KEY` or a running Ollama server
 - RSS can still work without external keys
 
 ## Run

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="LEIS Realtime Agent API",
     version="0.1.0",
-    description="Simple FastAPI backend with Gemini-assisted agents for live OSINT topic analysis.",
+    description="Simple FastAPI backend with Gemini/Ollama-assisted agents for live OSINT topic analysis.",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -49,6 +49,15 @@ def health() -> dict:
             "newsdata": bool(settings.newsdata_api_key),
             "gnews": bool(settings.gnews_api_key),
             "gemini": bool(settings.gemini_api_key),
+            "ollama": bool(settings.ollama_enabled and settings.ollama_base_url),
+        },
+        "ai": {
+            "gemini_enabled": bool(settings.gemini_api_key),
+            "ollama_enabled": bool(settings.ollama_enabled and settings.ollama_base_url),
+            "ollama_route": settings.ollama_route,
+            "ollama_llama_model": settings.ollama_llama_model,
+            "ollama_mistral_model": settings.ollama_mistral_model,
+            "ollama_base_url": settings.ollama_base_url,
         },
     }
 
@@ -66,6 +75,7 @@ def list_sources() -> dict:
             "gnews": bool(settings.gnews_api_key),
             "web_scraper": True,
             "gemini_llm": bool(settings.gemini_api_key),
+            "ollama_llm": bool(settings.ollama_enabled and settings.ollama_base_url),
         },
     }
 
@@ -76,7 +86,7 @@ def run_topic(payload: TopicRequest) -> TopicResult:
         result = orchestrator.run(topic=payload.topic, max_items=payload.max_items)
         meta = result.meta or {}
         mode = str(meta.get("mode", "unknown"))
-        if mode == "gemini":
+        if mode in {"gemini", "ollama"}:
             logger.info(
                 "topic analysis success topic=%s alerts=%d mode=%s model=%s",
                 payload.topic,
@@ -110,7 +120,7 @@ def stream_topic(
                 if event_name == "result":
                     meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
                     mode = str(meta.get("mode", "unknown")) if isinstance(meta, dict) else "unknown"
-                    if mode == "gemini":
+                    if mode in {"gemini", "ollama"}:
                         logger.info(
                             "stream result success topic=%s mode=%s model=%s",
                             topic,
