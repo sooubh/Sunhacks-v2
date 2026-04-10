@@ -154,8 +154,8 @@ class PipelineOrchestrator:
             ),
             PipelineStage(
                 id="reporter",
-                name="Gemini Reporter",
-                description="Generates final operational briefing with Gemini",
+                name="AI Reporter",
+                description="Generates final operational briefing using Gemini or Ollama",
             ),
         ]
 

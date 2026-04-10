@@ -18,8 +18,15 @@ This project supports partial keys. You can start with just one source and add m
   - Console: https://gnews.io
 
 - Gemini LLM report mode: set GEMINI_API_KEY
-  - Without this key, AI report falls back to deterministic summary mode.
+  - Without this key, backend will automatically try Ollama local LLM mode.
   - Optional model override: GEMINI_MODEL (default is gemini-flash-latest).
+
+- Ollama local LLM report mode (no cloud key required)
+  - Optional: OLLAMA_ENABLED=true
+  - Optional: OLLAMA_BASE_URL=http://127.0.0.1:11434
+  - Optional model override: OLLAMA_MODEL=llama3:8b
+  - Optional timeout: OLLAMA_REQUEST_TIMEOUT_SECONDS=120
+  - If both Gemini and Ollama are unavailable, backend uses deterministic fallback summary mode.
 
 - Web scraper source
   - No key required.
