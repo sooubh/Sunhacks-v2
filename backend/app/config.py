@@ -45,7 +45,9 @@ class Settings:
     gemini_model: str
     ollama_enabled: bool
     ollama_base_url: str
-    ollama_model: str
+    ollama_route: str
+    ollama_llama_model: str
+    ollama_mistral_model: str
     ollama_request_timeout_seconds: int
     cors_allow_origins: str
     request_timeout_seconds: int
@@ -72,9 +74,11 @@ class Settings:
             tavily_recent_days=int(os.getenv("TAVILY_RECENT_DAYS", "3")),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-flash-latest").strip(),
-            ollama_enabled=_env_bool("OLLAMA_ENABLED", False),
+            ollama_enabled=_env_bool("OLLAMA_ENABLED", True),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b").strip(),
+            ollama_route=os.getenv("OLLAMA_ROUTE", "deep").strip().lower(),
+            ollama_llama_model=os.getenv("OLLAMA_LLAMA_MODEL", os.getenv("OLLAMA_MODEL", "llama3:8b")).strip(),
+            ollama_mistral_model=os.getenv("OLLAMA_MISTRAL_MODEL", "mistral:7b").strip(),
             ollama_request_timeout_seconds=int(os.getenv("OLLAMA_REQUEST_TIMEOUT_SECONDS", "120")),
             cors_allow_origins=os.getenv("CORS_ALLOW_ORIGINS", "*").strip(),
             request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "15")),

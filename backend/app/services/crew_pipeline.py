@@ -4,8 +4,6 @@ import logging
 import time
 from typing import Iterable
 
-import requests
-
 try:
     from langchain_ollama import OllamaLLM as LangChainOllama
 except Exception:
@@ -37,6 +35,8 @@ class CrewReporter:
                 {"mode": "empty"},
             )
 
+        prompt = self._build_prompt(topic=topic, alerts=alerts)
+
         gemini_reason = ""
         if genai is None:
             gemini_reason = "gemini_sdk_missing"
@@ -45,14 +45,13 @@ class CrewReporter:
             gemini_reason = "missing_gemini_key"
             logger.info("Gemini key missing; skipping Gemini mode topic=%s", topic)
         else:
-            prompt = self._build_prompt(topic=topic, alerts=alerts)
             gemini_text, gemini_meta = self._generate_with_gemini(topic=topic, alerts=alerts, prompt=prompt)
             if gemini_text:
                 return gemini_text, gemini_meta
             gemini_reason = gemini_meta.get("reason", "gemini_runtime_error")
 
         ollama_prompt = self._build_ollama_prompt(topic=topic, alerts=alerts)
-        ollama_text, ollama_meta = self._generate_with_ollama(topic=topic, alerts=alerts, prompt=ollama_prompt)
+        ollama_text, ollama_meta = self._generate_with_ollama(topic=topic, alerts=alerts, query=ollama_prompt)
         if ollama_text:
             return ollama_text, ollama_meta
 
@@ -140,7 +139,7 @@ class CrewReporter:
             "model_errors": " | ".join(model_errors[:2]),
         }
 
-    def _generate_with_ollama(self, topic: str, alerts: list[AlertOut], prompt: str) -> tuple[str | None, dict[str, str]]:
+    def _generate_with_ollama(self, topic: str, alerts: list[AlertOut], query: str) -> tuple[str | None, dict[str, str]]:
         if not self.settings.ollama_enabled:
             return None, {"reason": "ollama_disabled"}
         if not self.settings.ollama_base_url:
@@ -149,51 +148,53 @@ class CrewReporter:
             logger.warning("LangChain Ollama client unavailable; skipping Ollama mode topic=%s", topic)
             return None, {"reason": "langchain_ollama_missing"}
 
-        model_errors: list[str] = []
-        configured_model = (self.settings.ollama_model or "").strip()
-        # Skip the /api/tags round-trip when a model is explicitly configured.
-        if configured_model:
-            available_models: set[str] = set()
-        else:
-            available_models = self._available_ollama_models()
+        route = self._select_ollama_route()
+        try:
+            text, model_name = self._invoke_ollama_router(route=route, query=query)
+            if text:
+                logger.info("Ollama report generated topic=%s route=%s model=%s alerts=%d", topic, route, model_name, len(alerts))
+                return text, {"mode": "ollama", "model": model_name, "route": route}
+            return None, {"reason": "ollama_empty_response", "route": route}
+        except Exception as exc:
+            logger.warning("Ollama runtime failed topic=%s route=%s error=%s", topic, route, exc)
+            return None, {
+                "reason": "ollama_runtime_error",
+                "route": route,
+                "model_errors": str(exc)[:240],
+            }
 
-        for model_name in self._candidate_ollama_models(available_models=available_models):
+    def _invoke_ollama_router(self, route: str, query: str) -> tuple[str, str]:
+        def _build_client(model_name: str, num_predict: int):
             try:
-                logger.debug(
-                    "Ollama model attempt topic=%s model=%s alerts=%d",
-                    topic,
-                    model_name,
-                    len(alerts),
-                )
-                client = LangChainOllama(
+                return LangChainOllama(
                     model=model_name,
                     base_url=self.settings.ollama_base_url,
                     temperature=0.2,
-                    num_predict=450,
+                    num_predict=num_predict,
                     timeout=self.settings.ollama_request_timeout_seconds,
                 )
-
-                text = str(client.invoke(prompt)).strip()
-                if text:
-                    logger.info("Ollama report generated topic=%s model=%s alerts=%d", topic, model_name, len(alerts))
-                    return text, {"mode": "ollama", "model": model_name}
-
-                model_errors.append(f"{model_name}: empty_response")
-            except Exception as model_exc:
-                error_text = str(model_exc)
-                logger.warning(
-                    "Ollama model call failed topic=%s model=%s error=%s",
-                    topic,
-                    model_name,
-                    model_exc,
+            except TypeError:
+                # Some Ollama client variants do not accept timeout.
+                return LangChainOllama(
+                    model=model_name,
+                    base_url=self.settings.ollama_base_url,
+                    temperature=0.2,
+                    num_predict=num_predict,
                 )
-                model_errors.append(f"{model_name}: {error_text}")
 
-        reason = "ollama_empty_response" if model_errors and all("empty_response" in e for e in model_errors) else "ollama_runtime_error"
-        return None, {
-            "reason": reason,
-            "model_errors": " | ".join(model_errors[:2]),
-        }
+        llama = _build_client(self.settings.ollama_llama_model, 450)
+        mistral = _build_client(self.settings.ollama_mistral_model, 300)
+
+        # Keep router behavior exactly as requested: fast -> mistral, else -> llama.
+        if route == "fast":
+            return str(mistral.invoke(query)).strip(), self.settings.ollama_mistral_model
+        return str(llama.invoke(query)).strip(), self.settings.ollama_llama_model
+
+    def _select_ollama_route(self) -> str:
+        route = (self.settings.ollama_route or "").strip().lower()
+        if route == "fast":
+            return "fast"
+        return "deep"
 
     @staticmethod
     def _is_transient_error(error_text: str) -> bool:
@@ -216,53 +217,6 @@ class CrewReporter:
             if name not in deduped:
                 deduped.append(name)
         return deduped
-
-    def _available_ollama_models(self) -> set[str]:
-        if not self.settings.ollama_base_url:
-            return set()
-
-        try:
-            response = requests.get(
-                f"{self.settings.ollama_base_url}/api/tags",
-                timeout=min(10, self.settings.ollama_request_timeout_seconds),
-            )
-            response.raise_for_status()
-            payload = response.json()
-            models = {
-                (item.get("name") or "").strip()
-                for item in payload.get("models", [])
-                if isinstance(item, dict)
-            }
-            return {name for name in models if name}
-        except Exception as exc:
-            logger.warning("Ollama tags check failed base_url=%s error=%s", self.settings.ollama_base_url, exc)
-            return set()
-
-    def _candidate_ollama_models(self, available_models: set[str]) -> list[str]:
-        configured = (self.settings.ollama_model or "").strip()
-        preferred = [
-            configured,
-            "llama3:8b",
-            "mistral:7b",
-            "llama3.2:latest",
-        ]
-
-        deduped: list[str] = []
-        for name in preferred:
-            if not name:
-                continue
-            if available_models and name not in available_models:
-                continue
-            if name not in deduped:
-                deduped.append(name)
-
-        if deduped:
-            return deduped
-
-        if available_models:
-            return sorted(available_models)
-
-        return [configured] if configured else ["llama3:8b"]
 
     def _build_prompt(self, topic: str, alerts: list[AlertOut]) -> str:
         serialized_alerts = self._serialize_alerts(alerts)

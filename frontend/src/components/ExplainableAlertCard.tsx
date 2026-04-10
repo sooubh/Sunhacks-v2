@@ -1,13 +1,17 @@
 import { useState } from 'react';
 import type { Alert } from '../types';
 import { format } from 'date-fns';
-import { useAppStore } from '../store/useAppStore';
+import AlertInsightModal from './AlertInsightModal.tsx';
 
 interface Props { alert: Alert; }
 
+function previewSummary(text: string, maxLen = 148): string {
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen).trimEnd()}...`;
+}
+
 export default function ExplainableAlertCard({ alert }: Props) {
-  const [open, setOpen] = useState(false);
-  const { resolveAlert } = useAppStore();
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   const riskColor = {
     HIGH:   'var(--risk-high)',
@@ -21,43 +25,35 @@ export default function ExplainableAlertCard({ alert }: Props) {
     <div
       id={`alert-card-${alert.id}`}
       className={`alert-card ${alert.riskLevel}`}
+      onClick={() => setIsModalOpen(true)}
     >
       {/* ── Header (always visible) ── */}
-      <div className="alert-header" onClick={() => setOpen(!open)}>
+      <div className="alert-header">
         <div style={{ flex: 1, minWidth: 0 }}>
-          {/* Badge row */}
-          <div className="flex items-center gap-8" style={{ marginBottom: 7 }}>
-            <span className={`risk-badge ${alert.riskLevel}`}>
-              <span style={{ color: riskColor, fontSize: 8 }}>{riskIcon}</span>
-              {alert.riskLevel}
-            </span>
+          <div className="alert-top-row">
+            <div className="alert-badge-cluster">
+              <span className={`risk-badge ${alert.riskLevel}`}>
+                <span style={{ color: riskColor, fontSize: 8 }}>{riskIcon}</span>
+                {alert.riskLevel}
+              </span>
 
-            <span className="flex items-center gap-8" style={{ gap: 5 }}>
-              <span className={`status-dot ${alert.status}`} />
-              <span className={`status-label ${alert.status}`}>{alert.status}</span>
-            </span>
+              <span className="flex items-center gap-8" style={{ gap: 5 }}>
+                <span className={`status-dot ${alert.status}`} />
+                <span className={`status-label ${alert.status}`}>{alert.status}</span>
+              </span>
 
-            <span className={`sentiment-tag ${alert.sentiment}`}>{alert.sentiment}</span>
+              <span className={`sentiment-tag ${alert.sentiment}`}>{alert.sentiment}</span>
+            </div>
 
-            <span
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 9,
-                color: 'var(--text-muted)',
-                marginLeft: 'auto',
-              }}
-            >
-              #{alert.id}
-            </span>
+            <span className="alert-id-badge">#{alert.id}</span>
           </div>
 
-          {/* Title */}
           <div className="alert-title">{alert.title}</div>
+          <div className="alert-summary-preview">{previewSummary(alert.summary)}</div>
         </div>
 
-        {/* Expand chevron */}
         <div className="alert-chevron">
-          <span style={{ fontSize: 8, color: 'inherit' }}>{open ? '▲' : '▼'}</span>
+          <span style={{ fontSize: 8, color: 'inherit' }}>↗</span>
         </div>
       </div>
 
@@ -79,6 +75,12 @@ export default function ExplainableAlertCard({ alert }: Props) {
           <span className="alert-meta-icon">🔗</span>
           {alert.rawCount} sources
         </span>
+      </div>
+
+      <div className="alert-context-row">
+        <span className="alert-context-chip">Entities: {alert.entities.length}</span>
+        <span className="alert-context-chip">Keywords: {alert.keywords.length}</span>
+        <span className="alert-context-chip">Updated: {format(alert.updatedAt, 'HH:mm:ss')}</span>
       </div>
 
       {/* ── Confidence / Escalation bars ── */}
@@ -117,137 +119,29 @@ export default function ExplainableAlertCard({ alert }: Props) {
         </div>
       </div>
 
-      {/* ── Expanded body ── */}
-      {open && (
-        <div className="alert-body open">
-
-          {/* Intelligence Summary */}
-          <div className="alert-section">
-            <div className="alert-section-header">
-              <span className="alert-section-label">📋 Intelligence Summary</span>
-              <span className="alert-section-line" />
-            </div>
-            <p className="alert-section-content">{alert.summary}</p>
-          </div>
-
-          {/* Why Triggered — Explainable AI */}
-          <div className="alert-section">
-            <div className="alert-section-header">
-              <span className="alert-section-label" style={{ color: 'var(--accent-cyan)' }}>
-                🧠 Why This Alert Was Triggered
-              </span>
-              <span className="alert-section-line" />
-            </div>
-            <div className="ai-reason-block">{alert.whyTriggered}</div>
-          </div>
-
-          {/* Named Entities */}
-          <div className="alert-section">
-            <div className="alert-section-header">
-              <span className="alert-section-label">👥 Named Entities</span>
-              <span className="alert-section-line" />
-            </div>
-            <div className="entity-row">
-              {alert.entities.map((e, i) => (
-                <div key={i} className="entity-chip">
-                  <span className="entity-type">{e.type}</span>
-                  <span className="entity-name">{e.name}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Keywords */}
-          <div className="alert-section">
-            <div className="alert-section-header">
-              <span className="alert-section-label">🏷 Extracted Keywords (NER)</span>
-              <span className="alert-section-line" />
-            </div>
-            <div className="keyword-chips">
-              {alert.keywords.map(k => (
-                <span key={k} className="keyword-chip">{k}</span>
-              ))}
-            </div>
-          </div>
-
-          {/* Evidence */}
-          <div className="alert-section">
-            <div className="alert-section-header">
-              <span className="alert-section-label">
-                🔍 Evidence Sources ({alert.evidence.length})
-              </span>
-              <span className="alert-section-line" />
-            </div>
-            {alert.evidence.map((ev, i) => (
-              <div key={i} className="evidence-item">
-                <div className="evidence-source">
-                  <span>📰 {ev.source}</span>
-                  <span className="evidence-timestamp">{ev.fetchedAt}</span>
-                </div>
-                <div className="evidence-excerpt">"{ev.excerpt}"</div>
-                <a
-                  href={ev.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="evidence-url"
-                >
-                  {ev.url}
-                </a>
-              </div>
-            ))}
-          </div>
-
-          {/* Recommended Actions */}
-          <div className="alert-section">
-            <div className="alert-section-header">
-              <span className="alert-section-label">⚡ Recommended Actions</span>
-              <span className="alert-section-line" />
-            </div>
-            <div className="action-list">
-              {alert.recommendedActions.map((action, i) => (
-                <div key={i} className="action-item">
-                  <span className="action-bullet">
-                    <span className="action-bullet-icon">▶</span>
-                  </span>
-                  <span>{action}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Footer actions */}
-          <div className="alert-footer">
-            {alert.status !== 'RESOLVED' && (
-              <button
-                id={`resolve-${alert.id}`}
-                className="btn btn-success btn-sm"
-                onClick={e => { e.stopPropagation(); resolveAlert(alert.id); }}
-              >
-                ✓ Mark Resolved
-              </button>
-            )}
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={e => e.stopPropagation()}
-            >
-              📤 Export Report
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={e => e.stopPropagation()}
-            >
-              🔗 Share Briefing
-            </button>
-
-            <div className="alert-footer-timestamp">
-              <span>Updated</span>
-              <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
-                {format(alert.updatedAt, 'HH:mm:ss')}
-              </span>
-            </div>
-          </div>
+      <div className="alert-footer alert-footer-card">
+        <button
+          className="btn btn-ghost btn-sm alert-open-btn"
+          onClick={(event) => {
+            event.stopPropagation();
+            setIsModalOpen(true);
+          }}
+        >
+          Open Full Report
+        </button>
+        <div className="alert-footer-timestamp">
+          <span>Updated</span>
+          <span className="alert-footer-timevalue">
+            {format(alert.updatedAt, 'HH:mm:ss')}
+          </span>
         </div>
-      )}
+      </div>
+
+      <AlertInsightModal
+        alert={alert}
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+      />
     </div>
   );
 }

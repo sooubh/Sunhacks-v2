@@ -49,12 +49,15 @@ def health() -> dict:
             "newsdata": bool(settings.newsdata_api_key),
             "gnews": bool(settings.gnews_api_key),
             "gemini": bool(settings.gemini_api_key),
-            "ollama_configured": bool(settings.ollama_enabled and settings.ollama_base_url),
+            "ollama": bool(settings.ollama_enabled and settings.ollama_base_url),
         },
         "ai": {
             "gemini_enabled": bool(settings.gemini_api_key),
-            "ollama_configured": bool(settings.ollama_enabled and settings.ollama_base_url),
-            "ollama_model": settings.ollama_model,
+            "ollama_enabled": bool(settings.ollama_enabled and settings.ollama_base_url),
+            "ollama_route": settings.ollama_route,
+            "ollama_llama_model": settings.ollama_llama_model,
+            "ollama_mistral_model": settings.ollama_mistral_model,
+            "ollama_base_url": settings.ollama_base_url,
         },
     }
 
