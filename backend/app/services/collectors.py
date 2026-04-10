@@ -3,8 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import logging
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus, urljoin, urlparse
 
+from bs4 import BeautifulSoup
 import feedparser
 import requests
 
@@ -19,14 +20,16 @@ class OSINTCollector:
         self.settings = settings
 
     def collect(self, topic: str, max_items: int) -> list[SourceSignal]:
-        per_source = max(3, max_items // 4)
+        per_source = max(3, max_items // 7)
 
         collected: list[SourceSignal] = []
         collected.extend(self._collect_newsapi(topic, per_source))
+        collected.extend(self._collect_newsdata(topic, per_source))
+        collected.extend(self._collect_gnews(topic, per_source))
         collected.extend(self._collect_tavily(topic, per_source))
-        collected.extend(self._collect_brave(topic, per_source))
         collected.extend(self._collect_rss(topic, per_source))
         collected.extend(self._collect_google_news_rss(topic, per_source))
+        collected.extend(self._collect_web_scraper(topic, per_source))
 
         deduped: dict[str, SourceSignal] = {}
         for signal in collected:
@@ -80,6 +83,8 @@ class OSINTCollector:
         payload = {
             "api_key": self.settings.tavily_api_key,
             "query": topic,
+            "topic": "news",
+            "days": self.settings.tavily_recent_days,
             "search_depth": "advanced",
             "max_results": limit,
         }
@@ -109,23 +114,71 @@ class OSINTCollector:
 
         return out
 
-    def _collect_brave(self, topic: str, limit: int) -> list[SourceSignal]:
-        if not self.settings.brave_api_key:
+    def _collect_newsdata(self, topic: str, limit: int) -> list[SourceSignal]:
+        if not self.settings.newsdata_api_key:
             return []
 
-        url = "https://api.search.brave.com/res/v1/web/search"
-        headers = {
-            "X-Subscription-Token": self.settings.brave_api_key,
-            "Accept": "application/json",
+        params = {
+            "apikey": self.settings.newsdata_api_key,
+            "q": topic,
+            "language": "en",
+            "country": "in",
+            "size": limit,
         }
-        params = {"q": topic, "count": limit}
 
-        payload = self._safe_get_json(url, params=params, headers=headers)
+        payload = self._safe_get_json("https://newsdata.io/api/1/latest", params=params)
+        if not payload:
+            payload = self._safe_get_json("https://newsdata.io/api/1/news", params=params)
         if not payload:
             return []
 
         out: list[SourceSignal] = []
-        for item in ((payload.get("web") or {}).get("results") or []):
+        for item in payload.get("results", []):
+            title = (item.get("title") or "").strip()
+            page_url = (item.get("link") or "").strip()
+            if not title or not page_url:
+                continue
+
+            source_name = (
+                (item.get("source_name") or "").strip()
+                or (item.get("source_id") or "").strip()
+                or "NewsData.io"
+            )
+
+            out.append(
+                SourceSignal(
+                    id=self._signal_id("newsdata", page_url),
+                    source_name=source_name,
+                    source_type="NEWS_API",
+                    title=title,
+                    url=page_url,
+                    snippet=((item.get("description") or item.get("content") or "").strip())[:320],
+                    published_at=self._parse_dt(item.get("pubDate")),
+                    domain=self._domain(page_url),
+                )
+            )
+
+        return out
+
+    def _collect_gnews(self, topic: str, limit: int) -> list[SourceSignal]:
+        if not self.settings.gnews_api_key:
+            return []
+
+        url = "https://gnews.io/api/v4/search"
+        params = {
+            "q": topic,
+            "lang": "en",
+            "country": "in",
+            "sortby": "publishedAt",
+            "max": limit,
+            "apikey": self.settings.gnews_api_key,
+        }
+        payload = self._safe_get_json(url, params=params)
+        if not payload:
+            return []
+
+        out: list[SourceSignal] = []
+        for item in payload.get("articles", []):
             title = (item.get("title") or "").strip()
             page_url = (item.get("url") or "").strip()
             if not title or not page_url:
@@ -133,13 +186,13 @@ class OSINTCollector:
 
             out.append(
                 SourceSignal(
-                    id=self._signal_id("brave", page_url),
-                    source_name="Brave Search",
-                    source_type="WEB_SEARCH",
+                    id=self._signal_id("gnews", page_url),
+                    source_name=((item.get("source") or {}).get("name") or "GNews").strip(),
+                    source_type="NEWS_API",
                     title=title,
                     url=page_url,
-                    snippet=(item.get("description") or "").strip(),
-                    published_at=self._parse_dt(item.get("age")),
+                    snippet=((item.get("description") or item.get("content") or "").strip())[:320],
+                    published_at=self._parse_dt(item.get("publishedAt")),
                     domain=self._domain(page_url),
                 )
             )
@@ -149,7 +202,7 @@ class OSINTCollector:
     def _collect_rss(self, topic: str, limit: int) -> list[SourceSignal]:
         topic_words = [part for part in topic.lower().split() if part]
         per_feed = max(1, limit // max(1, len(self.settings.rss_feeds)))
-        out: list[SourceSignal] = []
+        feed_buckets: list[list[SourceSignal]] = []
 
         for feed_url in self.settings.rss_feeds:
             try:
@@ -159,6 +212,7 @@ class OSINTCollector:
                 continue
 
             feed_name = (parsed.feed.get("title") or self._domain(feed_url) or "RSS Feed").strip()
+            feed_items: list[SourceSignal] = []
             for entry in parsed.entries[: per_feed * 3]:
                 title = (entry.get("title") or "").strip()
                 page_url = (entry.get("link") or "").strip()
@@ -170,7 +224,7 @@ class OSINTCollector:
                 if topic_words and not any(word in haystack for word in topic_words):
                     continue
 
-                out.append(
+                feed_items.append(
                     SourceSignal(
                         id=self._signal_id(feed_name, page_url),
                         source_name=feed_name,
@@ -182,11 +236,29 @@ class OSINTCollector:
                         domain=self._domain(page_url),
                     )
                 )
-                if len(out) >= limit:
+
+                if len(feed_items) >= per_feed:
                     break
 
-            if len(out) >= limit:
+            if feed_items:
+                feed_buckets.append(feed_items)
+
+        if not feed_buckets:
+            return []
+
+        out: list[SourceSignal] = []
+        cursor = 0
+        while len(out) < limit:
+            added_in_round = False
+            for bucket in feed_buckets:
+                if cursor < len(bucket):
+                    out.append(bucket[cursor])
+                    added_in_round = True
+                    if len(out) >= limit:
+                        break
+            if not added_in_round:
                 break
+            cursor += 1
 
         return out
 
@@ -217,6 +289,65 @@ class OSINTCollector:
 
         return out
 
+    def _collect_web_scraper(self, topic: str, limit: int) -> list[SourceSignal]:
+        topic_words = [part for part in topic.lower().split() if part]
+        per_site = max(1, limit // max(1, len(self.settings.web_scraper_urls)))
+        out: list[SourceSignal] = []
+
+        for site_url in self.settings.web_scraper_urls:
+            html = self._safe_get_html(site_url)
+            if not html:
+                continue
+
+            soup = BeautifulSoup(html, "html.parser")
+            source_domain = self._domain(site_url) or "web-scraper"
+            source_name = f"{source_domain} scraper"
+            added_for_site = 0
+
+            for anchor in soup.select("a[href]"):
+                href = (anchor.get("href") or "").strip()
+                if not href or href.startswith("#"):
+                    continue
+
+                title = " ".join(anchor.get_text(" ", strip=True).split())
+                if len(title) < 24:
+                    continue
+
+                page_url = urljoin(site_url, href)
+                if not page_url.startswith("http"):
+                    continue
+
+                haystack = title.lower()
+                if topic_words and not any(word in haystack for word in topic_words):
+                    continue
+
+                parent = anchor.find_parent(["article", "li", "section", "div"])
+                snippet = ""
+                if parent:
+                    snippet = " ".join(parent.get_text(" ", strip=True).split())[:320]
+
+                out.append(
+                    SourceSignal(
+                        id=self._signal_id(source_name, page_url),
+                        source_name=source_name,
+                        source_type="WEB_SEARCH",
+                        title=title,
+                        url=page_url,
+                        snippet=snippet,
+                        published_at=None,
+                        domain=self._domain(page_url),
+                    )
+                )
+
+                added_for_site += 1
+                if added_for_site >= per_site or len(out) >= limit:
+                    break
+
+            if len(out) >= limit:
+                break
+
+        return out[:limit]
+
     def _safe_get_json(
         self,
         url: str,
@@ -234,6 +365,25 @@ class OSINTCollector:
             return response.json()
         except Exception as exc:
             logger.warning("GET %s failed: %s", url, exc)
+            return None
+
+    def _safe_get_html(self, url: str) -> str | None:
+        try:
+            response = requests.get(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    )
+                },
+                timeout=self.settings.request_timeout_seconds,
+            )
+            response.raise_for_status()
+            return response.text
+        except Exception as exc:
+            logger.warning("HTML GET %s failed: %s", url, exc)
             return None
 
     def _safe_post_json(self, url: str, payload: dict) -> dict | None:

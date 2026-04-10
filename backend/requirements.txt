@@ -4,4 +4,5 @@ pydantic>=2.7.0
 python-dotenv>=1.0.1
 requests>=2.32.3
 feedparser>=6.0.11
-crewai>=0.120.1
+beautifulsoup4>=4.12.3
+google-genai>=0.6.0

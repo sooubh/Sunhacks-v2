@@ -47,7 +47,7 @@ export default function LoginPage() {
         {/* Logo / Branding */}
         <div className="login-logo-wrap">
           <div className="login-shield">🛡️</div>
-          <div className="login-title">ConflictSense</div>
+          <div className="login-title">Leis</div>
           <div className="login-subtitle">OSINT Intelligence Platform</div>
         </div>
 

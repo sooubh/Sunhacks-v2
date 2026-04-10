@@ -100,7 +100,7 @@ export default function AuditLogsPage() {
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url; a.download = 'conflictsense_audit.csv'; a.click();
+            a.href = url; a.download = 'Leis_audit.csv'; a.click();
           }}
         >
           📥 Export CSV

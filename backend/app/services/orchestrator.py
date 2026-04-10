@@ -135,7 +135,7 @@ class PipelineOrchestrator:
             PipelineStage(
                 id="collector",
                 name="OSINT Collector",
-                description="Fetches from Tavily, Brave, NewsAPI, and RSS sources",
+                description="Fetches from NewsAPI, NewsData, GNews, Tavily (recent news), RSS, Google News, and website scraping",
             ),
             PipelineStage(
                 id="cleaner",
@@ -154,8 +154,8 @@ class PipelineOrchestrator:
             ),
             PipelineStage(
                 id="reporter",
-                name="CrewAI Reporter",
-                description="Generates final multi-agent operational briefing",
+                name="Gemini Reporter",
+                description="Generates final operational briefing with Gemini",
             ),
         ]
 

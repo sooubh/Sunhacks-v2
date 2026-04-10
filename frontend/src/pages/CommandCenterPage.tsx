@@ -13,7 +13,7 @@ const COLORS = {
   LOW: '#22c55e',
 };
 
-const PIE_COLORS = ['#ef4444', '#f97316', '#22c55e', '#3b82f6', '#6366f1', '#06b6d4'];
+const PIE_COLORS = ['#ef4444', '#f97316', '#22c55e', '#c9a227', '#7f6847', '#2f8f72'];
 
 const CustomTooltipTheme = ({ active, payload, label }: any) => {
   if (!active || !payload?.length) return null;
@@ -113,8 +113,8 @@ export default function CommandCenterPage() {
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-              <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#64748b' }} interval={3} />
-              <YAxis tick={{ fontSize: 9, fill: '#64748b' }} />
+              <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#8b8478' }} interval={3} />
+              <YAxis tick={{ fontSize: 9, fill: '#8b8478' }} />
               <Tooltip content={<CustomTooltipTheme />} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Area type="monotone" dataKey="HIGH" stroke="#ef4444" strokeWidth={2} fill="url(#gHigh)" />
@@ -154,8 +154,8 @@ export default function CommandCenterPage() {
         <ResponsiveContainer width="100%" height={160}>
           <BarChart data={riskTrends.slice(-12)} margin={{ top: 5, right: 10, bottom: 5, left: -20 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-            <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#64748b' }} />
-            <YAxis tick={{ fontSize: 9, fill: '#64748b' }} />
+            <XAxis dataKey="time" tick={{ fontSize: 9, fill: '#8b8478' }} />
+            <YAxis tick={{ fontSize: 9, fill: '#8b8478' }} />
             <Tooltip content={<CustomTooltipTheme />} />
             <Bar dataKey="HIGH" stackId="a" fill="#ef4444" radius={[0, 0, 0, 0]} />
             <Bar dataKey="MEDIUM" stackId="a" fill="#f97316" />
@@ -170,7 +170,7 @@ export default function CommandCenterPage() {
           <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: 'var(--text-muted)' }}>
             🔴 Top Critical Alerts
           </div>
-          <a href="/alerts" style={{ fontSize: 11, color: 'var(--accent-blue)', textDecoration: 'none' }}>View all →</a>
+          <a href="/alerts" style={{ fontSize: 11, color: 'var(--text-accent)', textDecoration: 'none' }}>View all →</a>
         </div>
         {topAlerts.length === 0 ? (
           <div className="empty-state">

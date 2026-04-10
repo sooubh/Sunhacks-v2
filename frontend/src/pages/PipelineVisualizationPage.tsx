@@ -2,9 +2,9 @@ import { useAppStore } from '../store/useAppStore';
 import { format } from 'date-fns';
 
 const STAGE_DETAILS: Record<string, { color: string; bg: string }> = {
-  collector: { color: 'var(--accent-blue)', bg: 'rgba(59,130,246,0.08)' },
-  cleaner: { color: 'var(--accent-cyan)', bg: 'rgba(6,182,212,0.08)' },
-  analyzer: { color: 'var(--accent-indigo)', bg: 'rgba(99,102,241,0.08)' },
+  collector: { color: 'var(--accent-blue)', bg: 'var(--accent-blue-dim)' },
+  cleaner: { color: 'var(--accent-cyan)', bg: 'rgba(47,143,114,0.12)' },
+  analyzer: { color: 'var(--accent-indigo)', bg: 'rgba(127,104,71,0.14)' },
   predictor: { color: 'var(--risk-medium)', bg: 'rgba(249,115,22,0.08)' },
   reporter: { color: 'var(--risk-low)', bg: 'rgba(34,197,94,0.08)' },
 };
@@ -43,8 +43,8 @@ export default function PipelineVisualizationPage() {
 
       {/* Pipeline status banner */}
       <div style={{
-        background: isPipelineRunning ? 'rgba(59,130,246,0.08)' : 'rgba(34,197,94,0.06)',
-        border: `1px solid ${isPipelineRunning ? 'rgba(59,130,246,0.25)' : 'rgba(34,197,94,0.2)'}`,
+        background: isPipelineRunning ? 'var(--accent-blue-dim)' : 'rgba(34,197,94,0.06)',
+        border: `1px solid ${isPipelineRunning ? 'var(--accent-blue-glow)' : 'rgba(34,197,94,0.2)'}`,
         borderRadius: 10, padding: '12px 18px', marginBottom: 20,
         display: 'flex', alignItems: 'center', gap: 12,
       }}>
@@ -169,7 +169,7 @@ export default function PipelineVisualizationPage() {
 
       <div className="mt-20">
         <div className="chart-card">
-          <div className="chart-title">🧠 CrewAI Intelligence Briefing</div>
+          <div className="chart-title">🧠 Gemini Intelligence Briefing</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
             Topic: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{lastTopic}</span>
           </div>

@@ -84,6 +84,15 @@ const STAGE_ICONS: Record<BackendStage['id'], string> = {
   reporter: '📄',
 };
 
+function logDebugReport(label: string, details: Record<string, unknown>): void {
+  const timestamp = new Date().toISOString();
+  console.groupCollapsed(`[RealtimeDebug] ${label} @ ${timestamp}`);
+  for (const [key, value] of Object.entries(details)) {
+    console.log(`${key}:`, value);
+  }
+  console.groupEnd();
+}
+
 function toDate(value: string | null | undefined): Date {
   if (!value) return new Date();
   const parsed = new Date(value);
@@ -175,6 +184,9 @@ export function mapRunResult(payload: BackendResult): UIRunResult {
 }
 
 export async function runTopic(topic: string, maxItems = 20): Promise<UIRunResult> {
+  const requestUrl = `${API_BASE}/api/realtime/topic`;
+  logDebugReport('runTopic.request', { topic, maxItems, requestUrl });
+
   const response = await fetch(`${API_BASE}/api/realtime/topic`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -183,11 +195,39 @@ export async function runTopic(topic: string, maxItems = 20): Promise<UIRunResul
 
   if (!response.ok) {
     const detail = await response.text();
+    console.error('[RealtimeDebug] runTopic.failed', {
+      topic,
+      maxItems,
+      status: response.status,
+      detail,
+      requestUrl,
+    });
     throw new Error(`Backend request failed: ${response.status} ${detail}`);
   }
 
   const json = (await response.json()) as BackendResult;
-  return mapRunResult(json);
+  const mapped = mapRunResult(json);
+  const mode = String(json.meta?.mode ?? 'unknown');
+
+  logDebugReport('runTopic.result', {
+    topic: mapped.topic,
+    alerts: mapped.alerts.length,
+    stageCount: mapped.stages.length,
+    mode,
+    reason: json.meta?.reason,
+    model: json.meta?.model,
+  });
+
+  if (mode !== 'gemini') {
+    console.warn('[RealtimeDebug] backend returned fallback mode', {
+      topic: mapped.topic,
+      mode,
+      reason: json.meta?.reason,
+      modelErrors: json.meta?.model_errors,
+    });
+  }
+
+  return mapped;
 }
 
 export type StreamHandlers = {
@@ -199,12 +239,25 @@ export type StreamHandlers = {
 export function streamTopic(topic: string, maxItems: number, handlers: StreamHandlers): () => void {
   const params = new URLSearchParams({ topic, max_items: String(maxItems) });
   const stream = new EventSource(`${API_BASE}/api/realtime/stream?${params.toString()}`);
+  logDebugReport('streamTopic.open', {
+    topic,
+    maxItems,
+    streamUrl: `${API_BASE}/api/realtime/stream?${params.toString()}`,
+  });
 
   stream.addEventListener('stage', event => {
     try {
       const data = JSON.parse((event as MessageEvent).data) as BackendStage;
+      console.info('[RealtimeDebug] stream stage', {
+        topic,
+        stage: data.id,
+        status: data.status,
+        itemsProcessed: data.items_processed,
+        processingMs: data.processing_time,
+      });
       handlers.onStage?.(mapStage(data));
     } catch (error) {
+      console.error('[RealtimeDebug] stream stage parse error', { topic, error });
       handlers.onError?.(`Stage parse error: ${String(error)}`);
     }
   });
@@ -212,8 +265,27 @@ export function streamTopic(topic: string, maxItems: number, handlers: StreamHan
   stream.addEventListener('result', event => {
     try {
       const data = JSON.parse((event as MessageEvent).data) as BackendResult;
+      const mode = String(data.meta?.mode ?? 'unknown');
+      logDebugReport('streamTopic.result', {
+        topic,
+        alerts: data.alerts.length,
+        mode,
+        reason: data.meta?.reason,
+        model: data.meta?.model,
+      });
+
+      if (mode !== 'gemini') {
+        console.warn('[RealtimeDebug] stream result fallback mode', {
+          topic,
+          mode,
+          reason: data.meta?.reason,
+          modelErrors: data.meta?.model_errors,
+        });
+      }
+
       handlers.onResult?.(mapRunResult(data));
     } catch (error) {
+      console.error('[RealtimeDebug] stream result parse error', { topic, error });
       handlers.onError?.(`Result parse error: ${String(error)}`);
     } finally {
       stream.close();
@@ -221,10 +293,26 @@ export function streamTopic(topic: string, maxItems: number, handlers: StreamHan
   });
 
   stream.addEventListener('error', event => {
+    const rawData = String((event as MessageEvent).data || '');
     try {
-      const data = JSON.parse((event as MessageEvent).data || '{}') as { error?: string };
-      handlers.onError?.(data.error || 'Realtime stream error');
-    } catch {
+      const data = JSON.parse(rawData || '{}') as { error?: string };
+      const errorMessage = data.error || 'Realtime stream error';
+      console.error('[RealtimeDebug] stream error event', {
+        topic,
+        maxItems,
+        readyState: stream.readyState,
+        rawData,
+        errorMessage,
+      });
+      handlers.onError?.(errorMessage);
+    } catch (error) {
+      console.error('[RealtimeDebug] stream error parse failure', {
+        topic,
+        maxItems,
+        readyState: stream.readyState,
+        rawData,
+        error,
+      });
       handlers.onError?.('Realtime stream error');
     } finally {
       stream.close();

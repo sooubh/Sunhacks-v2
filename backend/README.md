@@ -1,53 +1,68 @@
-# LEIS Realtime Agent Backend (Simple)
+# Backend: LEIS Realtime Agent API
 
-This backend is intentionally simple and readable.
+This backend provides the realtime OSINT pipeline and API consumed by the frontend command center.
 
-It provides a realtime OSINT pipeline with these agents:
-- Collector Agent: Tavily + Brave + NewsAPI + RSS fetch
-- Cleaner Agent: de-duplicate weak/duplicate records
-- Analyzer Agent: classify category/sentiment/keywords
-- Predictor Agent: risk, confidence, impact, actions
-- Reporter Agent (CrewAI): multi-agent intelligence briefing
+Pipeline stages:
+- Collector: gathers signals from NewsAPI, NewsData, GNews, Tavily, RSS, Google News RSS, and web scraping.
+- Cleaner: removes duplicate/noisy records.
+- Analyzer: infers category, sentiment, keywords, and location.
+- Predictor: computes risk, confidence, impact, escalation, and actions.
+- Reporter: generates final intelligence briefing with Gemini or deterministic fallback.
 
-## 1) Install
+## Install
 
 ```powershell
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env
+Copy-Item .env.example .env
 ```
 
-## 2) Add API keys
+## Environment Keys
 
-Open `.env` and add whichever keys you have.
+In `backend/.env`, fill keys as available:
+- `TAVILY_API_KEY`
+- `NEWSAPI_KEY`
+- `NEWSDATA_API_KEY`
+- `GNEWS_API_KEY`
+- `GEMINI_API_KEY`
+
+Useful options:
+- `TAVILY_RECENT_DAYS` (default `3`)
+- `GEMINI_MODEL` (default `gemini-flash-latest`)
+- `CORS_ALLOW_ORIGINS` (default from env template)
+- `REQUEST_TIMEOUT_SECONDS`
+- `RSS_FEEDS`
+- `WEB_SCRAPER_URLS`
 
 Minimum useful setup:
-- `NEWSAPI_KEY` OR `TAVILY_API_KEY` OR `BRAVE_API_KEY`
-- RSS works even without keys
+- `NEWSAPI_KEY` or `TAVILY_API_KEY`
+- RSS can still work without external keys
 
-CrewAI summary mode:
-- Add `OPENAI_API_KEY` for full CrewAI report generation.
-- Without it, backend still works using deterministic fallback summary.
-
-## 3) Run server
+## Run
 
 ```powershell
 uvicorn app.main:app --reload --port 8000
 ```
 
-## 4) Endpoints
+## API Endpoints
 
 - `GET /health`
 - `GET /api/realtime/sources`
 - `POST /api/realtime/topic`
 - `GET /api/realtime/stream?topic=...&max_items=...` (SSE)
 
-## 5) Example request
+## Quick Test
 
-```bash
-curl -X POST http://127.0.0.1:8000/api/realtime/topic \
-  -H "Content-Type: application/json" \
-  -d "{\"topic\":\"mumbai protest traffic unrest\",\"max_items\":20}"
+```powershell
+curl -X POST http://127.0.0.1:8000/api/realtime/topic -H "Content-Type: application/json" -d "{\"topic\":\"mumbai protest traffic unrest\",\"max_items\":20}"
 ```
+
+## Documentation Links
+
+- `../README.md`
+- `../docs/PROJECT_DOCUMENTATION.md`
+- `../docs/API_REFERENCE.md`
+- `../docs/SETUP_AND_RUN.md`
+- `API_KEYS_GUIDE.md`

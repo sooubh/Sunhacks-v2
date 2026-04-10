@@ -6,15 +6,28 @@ This project supports partial keys. You can start with just one source and add m
 
 - Tavily Search: set TAVILY_API_KEY
   - Console: https://app.tavily.com
-
-- Brave Search API: set BRAVE_API_KEY
-  - Console: https://api.search.brave.com
+  - Recent-only mode is enabled using `topic=news` and `TAVILY_RECENT_DAYS` (default: 3).
 
 - NewsAPI: set NEWSAPI_KEY
   - Console: https://newsapi.org
 
-- CrewAI LLM report mode: set OPENAI_API_KEY
-  - Without this key, CrewAI report falls back to deterministic summary mode.
+- NewsData.io: set NEWSDATA_API_KEY
+  - Console: https://newsdata.io
+
+- GNews API: set GNEWS_API_KEY
+  - Console: https://gnews.io
+
+- Gemini LLM report mode: set GEMINI_API_KEY
+  - Without this key, AI report falls back to deterministic summary mode.
+  - Optional model override: GEMINI_MODEL (default is gemini-flash-latest).
+
+- Web scraper source
+  - No key required.
+  - Optional target websites: WEB_SCRAPER_URLS (comma-separated URLs).
+
+- RSS source pack (enabled by default)
+  - Includes Google News RSS, Times of India RSS, NDTV RSS, Indian Express RSS, The Hindu RSS, BBC India RSS.
+  - Override with `RSS_FEEDS` (comma-separated feed URLs).
 
 ## Quick validation
 

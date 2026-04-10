@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Iterable
 
 from ..config import Settings
 from ..models import AlertOut
 
 try:
-    from crewai import Agent, Crew, Process, Task, LLM
+    from google import genai
 except Exception:
-    Agent = Crew = Process = Task = LLM = None
+    genai = None
+
+
+logger = logging.getLogger(__name__)
 
 
 class CrewReporter:
@@ -22,97 +27,131 @@ class CrewReporter:
                 {"mode": "empty"},
             )
 
-        if Agent is None or Crew is None or Task is None or Process is None:
-            return self._fallback_report(topic, alerts), {"mode": "fallback", "reason": "crewai_not_installed"}
+        if genai is None:
+            logger.warning("Gemini SDK unavailable; using fallback report mode topic=%s", topic)
+            return self._fallback_report(topic, alerts), {"mode": "fallback", "reason": "gemini_sdk_missing"}
 
-        llm = self._build_llm()
-        if llm is None:
-            return self._fallback_report(topic, alerts), {"mode": "fallback", "reason": "missing_openai_key"}
+        if not self.settings.gemini_api_key:
+            logger.warning("Gemini key missing; using fallback report mode topic=%s", topic)
+            return self._fallback_report(topic, alerts), {"mode": "fallback", "reason": "missing_gemini_key"}
 
-        serialized_alerts = self._serialize_alerts(alerts)
-
-        collector_agent = Agent(
-            role="OSINT Collector Agent",
-            goal="Summarize the strongest facts from multi-source OSINT signals for the given topic.",
-            backstory="You are an intelligence collector focused on factual extraction and source grounded evidence.",
-            llm=llm,
-            allow_delegation=False,
-            verbose=False,
-        )
-        validator_agent = Agent(
-            role="Source Validation Agent",
-            goal="Highlight reliability, possible misinformation flags, and confidence consistency.",
-            backstory="You validate source credibility and detect weak or conflicting evidence quickly.",
-            llm=llm,
-            allow_delegation=False,
-            verbose=False,
-        )
-        analyst_agent = Agent(
-            role="Risk Analysis Agent",
-            goal="Infer likely impact and escalation outcomes using the current dataset.",
-            backstory="You transform signal evidence into operationally useful risk intelligence.",
-            llm=llm,
-            allow_delegation=False,
-            verbose=False,
-        )
-        reporter_agent = Agent(
-            role="Operations Briefing Agent",
-            goal="Produce a concise but detailed final briefing for command center operators.",
-            backstory="You write executive summaries and recommend immediate actions.",
-            llm=llm,
-            allow_delegation=False,
-            verbose=False,
-        )
-
-        collect_task = Task(
-            description=(
-                "Topic: {topic}. Use this dataset to list the most important confirmed facts and evidence:\n"
-                "{dataset}\n"
-                "Return a concise bullet summary with references to source names and risk level."
-            ),
-            expected_output="A compact evidence-first summary of key incidents.",
-            agent=collector_agent,
-        )
-        validate_task = Task(
-            description=(
-                "Using the same dataset, identify misinformation risk indicators, source disagreements, and confidence caveats."
-            ),
-            expected_output="A reliability audit with clear caveats and trust signals.",
-            agent=validator_agent,
-        )
-        analyze_task = Task(
-            description=(
-                "Infer top escalation scenarios and probable impact windows in the next 6-24 hours."
-            ),
-            expected_output="Risk projection with probability-weighted outcomes.",
-            agent=analyst_agent,
-        )
-        report_task = Task(
-            description=(
-                "Create the final operational briefing with three sections: Situation, Validation, Recommended Actions."
-            ),
-            expected_output="A final structured briefing for field and command teams.",
-            agent=reporter_agent,
-        )
+        prompt = self._build_prompt(topic=topic, alerts=alerts)
 
         try:
-            crew = Crew(
-                agents=[collector_agent, validator_agent, analyst_agent, reporter_agent],
-                tasks=[collect_task, validate_task, analyze_task, report_task],
-                process=Process.sequential,
-                verbose=False,
-            )
-            result = crew.kickoff(inputs={"topic": topic, "dataset": serialized_alerts})
-            text = str(result).strip() or self._fallback_report(topic, alerts)
-            return text, {"mode": "crewai"}
-        except Exception as exc:
-            fallback = self._fallback_report(topic, alerts)
-            return f"{fallback}\n\nCrewAI runtime warning: {exc}", {"mode": "fallback", "reason": "crewai_runtime_error"}
+            client = genai.Client(api_key=self.settings.gemini_api_key)
+            model_errors: list[str] = []
 
-    def _build_llm(self):
-        if not self.settings.openai_api_key or LLM is None:
-            return None
-        return LLM(model=self.settings.openai_model, api_key=self.settings.openai_api_key)
+            for model_name in self._candidate_models():
+                max_attempts = 2
+                for attempt in range(1, max_attempts + 1):
+                    try:
+                        logger.debug(
+                            "Gemini model attempt topic=%s model=%s attempt=%d/%d alerts=%d",
+                            topic,
+                            model_name,
+                            attempt,
+                            max_attempts,
+                            len(alerts),
+                        )
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                        )
+                        text = (getattr(response, "text", "") or "").strip()
+
+                        if text:
+                            logger.info("Gemini report generated topic=%s model=%s alerts=%d", topic, model_name, len(alerts))
+                            return text, {"mode": "gemini", "model": model_name}
+
+                        if attempt < max_attempts:
+                            logger.warning(
+                                "Gemini empty response; retrying topic=%s model=%s attempt=%d",
+                                topic,
+                                model_name,
+                                attempt,
+                            )
+                            time.sleep(0.8 * attempt)
+                            continue
+
+                        model_errors.append(f"{model_name}: empty_response")
+                        logger.warning("Gemini returned empty response topic=%s model=%s", topic, model_name)
+                        break
+                    except Exception as model_exc:
+                        error_text = str(model_exc)
+                        should_retry = self._is_transient_error(error_text) and attempt < max_attempts
+                        logger.warning(
+                            "Gemini model call failed topic=%s model=%s attempt=%d error=%s",
+                            topic,
+                            model_name,
+                            attempt,
+                            model_exc,
+                        )
+
+                        if should_retry:
+                            time.sleep(0.8 * attempt)
+                            continue
+
+                        model_errors.append(f"{model_name}: {error_text}")
+                        break
+
+            reason = "gemini_empty_response" if model_errors and all("empty_response" in e for e in model_errors) else "gemini_runtime_error"
+            logger.warning(
+                "Gemini report fallback topic=%s reason=%s model_errors=%s",
+                topic,
+                reason,
+                " | ".join(model_errors[:2]) if model_errors else "none",
+            )
+
+            return self._fallback_report(topic, alerts), {
+                "mode": "fallback",
+                "reason": reason,
+                "model_errors": " | ".join(model_errors[:2]),
+            }
+        except Exception as exc:
+            logger.exception("Gemini client/runtime failure topic=%s", topic)
+            fallback = self._fallback_report(topic, alerts)
+            return f"{fallback}\n\nGemini runtime warning: {exc}", {
+                "mode": "fallback",
+                "reason": "gemini_runtime_error",
+            }
+
+    @staticmethod
+    def _is_transient_error(error_text: str) -> bool:
+        text = error_text.upper()
+        return "503" in text or "UNAVAILABLE" in text or "TIMEOUT" in text
+
+    def _candidate_models(self) -> list[str]:
+        configured = (self.settings.gemini_model or "").strip()
+        candidates = [
+            configured,
+            "gemini-flash-latest",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+        ]
+
+        deduped: list[str] = []
+        for name in candidates:
+            if not name:
+                continue
+            if name not in deduped:
+                deduped.append(name)
+        return deduped
+
+    def _build_prompt(self, topic: str, alerts: list[AlertOut]) -> str:
+        serialized_alerts = self._serialize_alerts(alerts)
+        return (
+            "You are an OSINT command-center analyst. "
+            "Create a detailed and operationally useful report for law-enforcement officers.\n\n"
+            f"Topic: {topic}\n"
+            "Use the following evidence list:\n"
+            f"{serialized_alerts}\n\n"
+            "Output format:\n"
+            "1) Situation Summary\n"
+            "2) Source Reliability and Fake-risk Notes\n"
+            "3) Risk and Impact Forecast (next 6-24 hours)\n"
+            "4) Recommended Actions (prioritized)\n"
+            "5) Short executive briefing (5 bullet points)\n"
+        )
 
     @staticmethod
     def _serialize_alerts(alerts: Iterable[AlertOut]) -> str:

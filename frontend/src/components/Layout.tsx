@@ -27,7 +27,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     high:   dashboardStats.highRisk,
   };
 
-  const meta = PAGE_META[location.pathname] || { title: 'ConflictSense', sub: '' };
+  const meta = PAGE_META[location.pathname] || { title: 'Leis', sub: '' };
 
   const handleLogout = () => {
     setUser(null);
@@ -44,7 +44,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="sidebar-logo">
           <div className="sidebar-logo-icon">🛡️</div>
           <div>
-            <div className="sidebar-logo-text">ConflictSense</div>
+            <div className="sidebar-logo-text">Leis</div>
             <div className="sidebar-logo-sub">OSINT Platform</div>
           </div>
         </div>

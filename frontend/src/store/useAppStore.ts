@@ -117,7 +117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   auditLogs: initialLogs,
   isVoiceOpen: false,
   voiceQuery: '',
-  latestReport: 'Run the pipeline to generate a CrewAI intelligence briefing.',
+  latestReport: 'Run the pipeline to generate a Gemini intelligence briefing.',
   lastTopic: 'Not set',
 
   setUser: (user) => set({ user, isAuthenticated: !!user }),
@@ -158,6 +158,22 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       const result = await runTopic(topic, 20);
+      const mode = String(result.meta?.mode ?? 'unknown');
+      if (mode === 'gemini') {
+        console.info('[AI Debug] triggerCollect succeeded with Gemini mode', {
+          topic,
+          model: result.meta?.model,
+          alerts: result.alerts.length,
+        });
+      } else {
+        console.warn('[AI Debug] triggerCollect returned fallback mode', {
+          topic,
+          mode,
+          reason: result.meta?.reason,
+          modelErrors: result.meta?.model_errors,
+        });
+      }
+
       set(state => {
         const alerts = mergeAlerts(state.alerts, result.alerts);
         return {
@@ -170,7 +186,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           lastTopic: result.topic,
         };
       });
-    } catch {
+    } catch (error) {
+      console.error('[AI Debug] triggerCollect backend failed, falling back to mock alerts', {
+        topic,
+        error,
+      });
+
       // Keep UI usable if backend is down or keys are missing.
       await new Promise(r => setTimeout(r, 1000));
       const newAlerts = generateMockAlerts(3);
@@ -207,11 +228,35 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const close = streamTopic(topic, 25, {
         onStage: (stage) => {
+          console.info('[AI Debug] pipeline stage update', {
+            topic,
+            stage: stage.id,
+            status: stage.status,
+            itemsProcessed: stage.itemsProcessed,
+            processingMs: stage.processingTime,
+          });
+
           set(state => ({
             pipelineStages: upsertStage(state.pipelineStages, stage),
           }));
         },
         onResult: (result) => {
+          const mode = String(result.meta?.mode ?? 'unknown');
+          if (mode === 'gemini') {
+            console.info('[AI Debug] runPipeline completed with Gemini mode', {
+              topic,
+              model: result.meta?.model,
+              alerts: result.alerts.length,
+            });
+          } else {
+            console.warn('[AI Debug] runPipeline completed in fallback mode', {
+              topic,
+              mode,
+              reason: result.meta?.reason,
+              modelErrors: result.meta?.model_errors,
+            });
+          }
+
           set(state => {
             const alerts = mergeAlerts(state.alerts, result.alerts);
             return {
@@ -227,7 +272,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           close();
           finish();
         },
-        onError: () => {
+        onError: (error) => {
+          console.error('[AI Debug] runPipeline stream failed', { topic, error });
           set({ isPipelineRunning: false });
           close();
           finish();

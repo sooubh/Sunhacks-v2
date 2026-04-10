@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useAppStore } from '../store/useAppStore';
+import { runTopic, type UIRunResult } from '../services/realtimeApi';
 
 interface Message { role: 'user' | 'ai'; text: string; time: string; }
 
@@ -57,14 +58,31 @@ function getAIResponse(query: string, state: ReturnType<typeof useAppStore.getSt
   return `Processing query: "${query}". Intelligence analysis underway. Try asking about high risk alerts, specific locations, or pipeline status.`;
 }
 
+function flattenText(value: string, maxLength = 500): string {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  return compact.length > maxLength ? `${compact.slice(0, maxLength)}...` : compact;
+}
+
+function formatBackendReply(result: UIRunResult): string {
+  const mode = String(result.meta?.mode ?? 'unknown');
+  const reason = typeof result.meta?.reason === 'string' ? result.meta.reason : '';
+  const intro = mode === 'gemini'
+    ? `Gemini analysis complete for "${result.topic}".`
+    : `AI fallback mode (${reason || mode}) for "${result.topic}".`;
+
+  return `${intro} ${flattenText(result.report)}`;
+}
+
 export default function VoiceAssistantDialog() {
   const { setVoiceOpen, setVoiceQuery } = useAppStore();
   const storeState = useAppStore.getState;
   const [messages, setMessages] = useState<Message[]>([
-    { role: 'ai', text: 'ConflictSense Voice AI ready. Ask me about active alerts, locations, or risk levels.', time: new Date().toLocaleTimeString() },
+    { role: 'ai', text: 'Leis Voice AI ready. Ask me about active alerts, locations, or risk levels.', time: new Date().toLocaleTimeString() },
   ]);
   const [input, setInput] = useState('');
   const [listening, setListening] = useState(false);
+  const [isAiResponding, setIsAiResponding] = useState(false);
+  const [respondingTopic, setRespondingTopic] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
 
@@ -72,19 +90,56 @@ export default function VoiceAssistantDialog() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const sendMessage = (text: string) => {
-    if (!text.trim()) return;
-    const userMsg: Message = { role: 'user', text, time: new Date().toLocaleTimeString() };
-    setVoiceQuery(text);
+  const sendMessage = async (text: string) => {
+    const query = text.trim();
+    if (!query || isAiResponding) return;
+
+    const userMsg: Message = { role: 'user', text: query, time: new Date().toLocaleTimeString() };
+    setVoiceQuery(query);
     setMessages(prev => [...prev, userMsg]);
     setInput('');
+    setIsAiResponding(true);
+    setRespondingTopic(query);
 
-    setTimeout(() => {
-      const state = storeState();
-      const response = getAIResponse(text, { ...state, voiceQuery: text });
-      const aiMsg: Message = { role: 'ai', text: response, time: new Date().toLocaleTimeString() };
+    try {
+      console.info('[VoiceAI Debug] Gemini request started', { topic: query, maxItems: 15 });
+
+      const timeoutMs = 20000;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`Gemini response timeout after ${timeoutMs}ms`)), timeoutMs);
+      });
+
+      const result = await Promise.race([runTopic(query, 15), timeoutPromise]);
+
+      console.info('[VoiceAI Debug] backend analysis success', {
+        topic: query,
+        mode: result.meta?.mode,
+        reason: result.meta?.reason,
+        model: result.meta?.model,
+        alerts: result.alerts.length,
+      });
+
+      const aiMsg: Message = {
+        role: 'ai',
+        text: formatBackendReply(result),
+        time: new Date().toLocaleTimeString(),
+      };
       setMessages(prev => [...prev, aiMsg]);
-    }, 600);
+    } catch (error) {
+      console.error('[VoiceAI Debug] backend analysis failed; using local fallback', { topic: query, error });
+      const state = storeState();
+      const response = getAIResponse(query, { ...state, voiceQuery: query });
+      const aiMsg: Message = {
+        role: 'ai',
+        text: `${response} Debug: backend AI request failed, local assistant fallback used.`,
+        time: new Date().toLocaleTimeString(),
+      };
+      setMessages(prev => [...prev, aiMsg]);
+    } finally {
+      setIsAiResponding(false);
+      setRespondingTopic('');
+      console.info('[VoiceAI Debug] Gemini request finished');
+    }
   };
 
   const toggleListening = () => {
@@ -131,7 +186,11 @@ export default function VoiceAssistantDialog() {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 12, fontWeight: 700 }}>Voice AI Assistant</div>
           <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            {listening ? '🔴 Listening...' : 'Powered by Gemini'}
+            {listening
+              ? 'Listening...'
+              : isAiResponding
+                ? `Gemini is typing... ${respondingTopic ? `(${respondingTopic})` : ''}`
+                : 'Powered by Gemini'}
           </div>
         </div>
         <button
@@ -151,6 +210,18 @@ export default function VoiceAssistantDialog() {
             <div style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 3 }}>{msg.time}</div>
           </div>
         ))}
+
+        {isAiResponding && (
+          <div className="voice-msg ai voice-typing-row">
+            <span className="typing-label">Gemini is typing</span>
+            <span className="typing-dots" aria-hidden="true">
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+            </span>
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -161,6 +232,7 @@ export default function VoiceAssistantDialog() {
             className="btn btn-ghost"
             style={{ padding: '3px 8px', fontSize: 9, letterSpacing: '0.3px' }}
             onClick={() => sendMessage(cmd)}
+            disabled={isAiResponding}
           >
             {cmd}
           </button>
@@ -175,14 +247,16 @@ export default function VoiceAssistantDialog() {
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && sendMessage(input)}
+          disabled={isAiResponding}
         />
         <button
           id="voice-send-btn"
           className="voice-send-btn"
           onClick={() => sendMessage(input)}
           title="Send"
+          disabled={isAiResponding}
         >
-          ➤
+          {isAiResponding ? '…' : '➤'}
         </button>
         <button
           id="voice-mic-input-btn"
