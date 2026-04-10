@@ -6,12 +6,13 @@ import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyBNdMAoimgkkNcwrZwgWUR_MDKBH28s7vE",
+  authDomain: "sunhacks-v2.firebaseapp.com",
+  projectId: "sunhacks-v2",
+  storageBucket: "sunhacks-v2.firebasestorage.app",
+  messagingSenderId: "119368822923",
+  appId: "1:119368822923:web:a53faa3f0913ed1289a48e",
+  measurementId: "G-GCC1BR9XVQ",
 };
 
 const app = initializeApp(firebaseConfig);
