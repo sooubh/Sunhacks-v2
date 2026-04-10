@@ -7,9 +7,12 @@ from typing import Iterable
 import requests
 
 try:
-    from langchain_community.llms import Ollama as LangChainOllama
+    from langchain_ollama import OllamaLLM as LangChainOllama
 except Exception:
-    LangChainOllama = None
+    try:
+        from langchain_community.llms import Ollama as LangChainOllama
+    except Exception:
+        LangChainOllama = None
 
 from ..config import Settings
 from ..models import AlertOut
