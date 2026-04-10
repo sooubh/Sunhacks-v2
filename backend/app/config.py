@@ -72,7 +72,7 @@ class Settings:
             tavily_recent_days=int(os.getenv("TAVILY_RECENT_DAYS", "3")),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-flash-latest").strip(),
-            ollama_enabled=_env_bool("OLLAMA_ENABLED", True),
+            ollama_enabled=_env_bool("OLLAMA_ENABLED", False),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/"),
             ollama_model=os.getenv("OLLAMA_MODEL", "llama3:8b").strip(),
             ollama_request_timeout_seconds=int(os.getenv("OLLAMA_REQUEST_TIMEOUT_SECONDS", "120")),

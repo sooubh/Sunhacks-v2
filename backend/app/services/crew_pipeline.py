@@ -37,8 +37,6 @@ class CrewReporter:
                 {"mode": "empty"},
             )
 
-        prompt = self._build_prompt(topic=topic, alerts=alerts)
-
         gemini_reason = ""
         if genai is None:
             gemini_reason = "gemini_sdk_missing"
@@ -47,6 +45,7 @@ class CrewReporter:
             gemini_reason = "missing_gemini_key"
             logger.info("Gemini key missing; skipping Gemini mode topic=%s", topic)
         else:
+            prompt = self._build_prompt(topic=topic, alerts=alerts)
             gemini_text, gemini_meta = self._generate_with_gemini(topic=topic, alerts=alerts, prompt=prompt)
             if gemini_text:
                 return gemini_text, gemini_meta
@@ -151,81 +150,44 @@ class CrewReporter:
             return None, {"reason": "langchain_ollama_missing"}
 
         model_errors: list[str] = []
-        available_models = self._available_ollama_models()
-
-        # Requested Ollama model clients (external Ollama API via base_url).
-        llama = LangChainOllama(
-            model="llama3:8b",
-            base_url=self.settings.ollama_base_url,
-            temperature=0.2,
-            num_predict=450,
-        )
-        mistral = LangChainOllama(
-            model="mistral:7b",
-            base_url=self.settings.ollama_base_url,
-            temperature=0.2,
-            num_predict=450,
-        )
-        predefined_clients = {
-            "llama3:8b": llama,
-            "mistral:7b": mistral,
-        }
+        configured_model = (self.settings.ollama_model or "").strip()
+        # Skip the /api/tags round-trip when a model is explicitly configured.
+        if configured_model:
+            available_models: set[str] = set()
+        else:
+            available_models = self._available_ollama_models()
 
         for model_name in self._candidate_ollama_models(available_models=available_models):
-            max_attempts = 1
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    logger.debug(
-                        "Ollama model attempt topic=%s model=%s attempt=%d/%d alerts=%d",
-                        topic,
-                        model_name,
-                        attempt,
-                        max_attempts,
-                        len(alerts),
-                    )
-                    client = predefined_clients.get(model_name)
-                    if client is None:
-                        client = LangChainOllama(
-                            model=model_name,
-                            base_url=self.settings.ollama_base_url,
-                            temperature=0.2,
-                            num_predict=450,
-                        )
+            try:
+                logger.debug(
+                    "Ollama model attempt topic=%s model=%s alerts=%d",
+                    topic,
+                    model_name,
+                    len(alerts),
+                )
+                client = LangChainOllama(
+                    model=model_name,
+                    base_url=self.settings.ollama_base_url,
+                    temperature=0.2,
+                    num_predict=450,
+                    timeout=self.settings.ollama_request_timeout_seconds,
+                )
 
-                    text = str(client.invoke(prompt)).strip()
-                    if text:
-                        logger.info("Ollama report generated topic=%s model=%s alerts=%d", topic, model_name, len(alerts))
-                        return text, {"mode": "ollama", "model": model_name}
+                text = str(client.invoke(prompt)).strip()
+                if text:
+                    logger.info("Ollama report generated topic=%s model=%s alerts=%d", topic, model_name, len(alerts))
+                    return text, {"mode": "ollama", "model": model_name}
 
-                    if attempt < max_attempts:
-                        logger.warning(
-                            "Ollama empty response; retrying topic=%s model=%s attempt=%d",
-                            topic,
-                            model_name,
-                            attempt,
-                        )
-                        time.sleep(0.8 * attempt)
-                        continue
-
-                    model_errors.append(f"{model_name}: empty_response")
-                    break
-                except Exception as model_exc:
-                    error_text = str(model_exc)
-                    should_retry = self._is_transient_error(error_text) and attempt < max_attempts
-                    logger.warning(
-                        "Ollama model call failed topic=%s model=%s attempt=%d error=%s",
-                        topic,
-                        model_name,
-                        attempt,
-                        model_exc,
-                    )
-
-                    if should_retry:
-                        time.sleep(0.8 * attempt)
-                        continue
-
-                    model_errors.append(f"{model_name}: {error_text}")
-                    break
+                model_errors.append(f"{model_name}: empty_response")
+            except Exception as model_exc:
+                error_text = str(model_exc)
+                logger.warning(
+                    "Ollama model call failed topic=%s model=%s error=%s",
+                    topic,
+                    model_name,
+                    model_exc,
+                )
+                model_errors.append(f"{model_name}: {error_text}")
 
         reason = "ollama_empty_response" if model_errors and all("empty_response" in e for e in model_errors) else "ollama_runtime_error"
         return None, {
