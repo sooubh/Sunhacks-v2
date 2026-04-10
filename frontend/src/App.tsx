@@ -1,46 +1,40 @@
-﻿import { useState, useEffect } from 'react'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { useAppStore } from './store/useAppStore';
+import Layout from './components/Layout';
+import LoginPage from './pages/LoginPage';
+import CommandCenterPage from './pages/CommandCenterPage';
+import AlertsSystemPage from './pages/AlertsSystemPage';
+import AuditLogsPage from './pages/AuditLogsPage';
+import PipelineVisualizationPage from './pages/PipelineVisualizationPage';
 
-interface EventData {
-  id: string
-  title: string
-  source: string
-  description: string
-  validity: string
-  impact: string
+function PrivateRoute({ children }: { children: React.ReactNode }) {
+  const isAuthenticated = useAppStore(s => s.isAuthenticated);
+  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
 }
 
-function App() {
-  const [events, setEvents] = useState<EventData[]>([])
-
-  useEffect(() => {
-    // Stub for fetching data from the backend
-    setEvents([
-      {
-        id: '1',
-        title: 'Suspicious Activity Detected',
-        source: 'Brave Search',
-        description: 'Reports of unusual gatherings in downtown sector.',
-        validity: 'VERIFIED',
-        impact: 'CRITICAL',
-      },
-    ])
-  }, [])
-
+export default function App() {
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-6">
-      <header className="mb-8 border-b border-gray-700 pb-4">
-        <h1 className="text-3xl font-bold text-blue-400">LEIS Dashboard</h1>
-      </header>
-      <main className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {events.map((event) => (
-          <div key={event.id} className="bg-gray-800 p-4 rounded-lg shadow-lg border border-gray-700">
-            <h2 className="text-xl font-semibold mb-2">{event.title}</h2>
-            <p className="text-sm text-gray-400 mb-4">{event.description}</p>
-          </div>
-        ))}
-      </main>
-    </div>
-  )
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/*"
+          element={
+            <PrivateRoute>
+              <Layout>
+                <Routes>
+                  <Route path="/dashboard" element={<CommandCenterPage />} />
+                  <Route path="/alerts" element={<AlertsSystemPage />} />
+                  <Route path="/pipeline" element={<PipelineVisualizationPage />} />
+                  <Route path="/audit" element={<AuditLogsPage />} />
+                  <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                </Routes>
+              </Layout>
+            </PrivateRoute>
+          }
+        />
+      </Routes>
+    </BrowserRouter>
+  );
 }
-
-export default App

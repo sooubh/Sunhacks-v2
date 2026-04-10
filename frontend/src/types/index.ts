@@ -46,6 +46,8 @@ export interface Alert {
   recommendedActions: string[];
   sources: OSINTSource[];
   rawCount: number; // how many raw articles merged
+  sourceValidity?: 'VERIFIED' | 'MIXED' | 'UNVERIFIED';
+  impact?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   createdAt: Date;
   updatedAt: Date;
 }
