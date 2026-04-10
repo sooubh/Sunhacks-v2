@@ -17,12 +17,54 @@ const SOURCE_CARDS = [
   { name: 'NDTV RSS', type: 'RSS Feed', icon: '📡', status: 'CONNECTED', latency: '~55ms', volume: '25 articles/run' },
 ];
 
+function stageResearchLabel(stageId: string, topic: string): string {
+  const scopedTopic = topic.trim() || 'public safety signals';
+
+  switch (stageId) {
+    case 'collector':
+      return `Collecting source documents and signals for "${scopedTopic}".`;
+    case 'cleaner':
+      return `Cleaning and deduplicating records linked to "${scopedTopic}".`;
+    case 'analyzer':
+      return `Analyzing entities, sentiment, and intent for "${scopedTopic}".`;
+    case 'predictor':
+      return `Scoring escalation probability and risk trajectory for "${scopedTopic}".`;
+    case 'reporter':
+      return `Drafting explainable briefing and actionables for "${scopedTopic}".`;
+    default:
+      return `Processing topic "${scopedTopic}".`;
+  }
+}
+
 export default function PipelineVisualizationPage() {
-  const { pipelineStages, isPipelineRunning, runPipeline, latestReport, lastTopic } = useAppStore();
+  const {
+    pipelineStages,
+    isPipelineRunning,
+    runPipeline,
+    latestReport,
+    lastTopic,
+    pipelineModelMode,
+    pipelineModelName,
+    pipelineModelReason,
+    pipelineActiveTopic,
+    pipelineLiveNode,
+    pipelineLiveInsight,
+    pipelineActivityFeed,
+  } = useAppStore();
 
   const totalProcessed = pipelineStages.reduce((sum, s) => sum + s.itemsProcessed, 0);
   const totalTime = pipelineStages.reduce((sum, s) => sum + s.processingTime, 0);
   const activeStage = pipelineStages.findIndex(s => s.status === 'RUNNING');
+  const activeTopic = isPipelineRunning ? (pipelineActiveTopic || lastTopic) : lastTopic;
+  const modelConfigured = pipelineModelMode === 'gemini';
+
+  const modelBadge = pipelineModelMode === 'unknown'
+    ? 'CHECKING'
+    : (pipelineModelMode === 'gemini' ? 'CONFIGURED' : 'FALLBACK');
+
+  const modelBadgeClass = pipelineModelMode === 'unknown'
+    ? 'unknown'
+    : (pipelineModelMode === 'gemini' ? 'configured' : 'fallback');
 
   return (
     <div>
@@ -39,6 +81,33 @@ export default function PipelineVisualizationPage() {
         >
           {isPipelineRunning ? <><span className="spinner" /> Running Pipeline...</> : '▶ Run Full Pipeline'}
         </button>
+      </div>
+
+      <div className="pipeline-readiness-panel">
+        <div className="pipeline-readiness-item">
+          <span className="pipeline-readiness-label">Model Status</span>
+          <span className={`pipeline-model-chip ${modelBadgeClass}`}>{modelBadge}</span>
+        </div>
+        <div className="pipeline-readiness-item">
+          <span className="pipeline-readiness-label">Model Name</span>
+          <strong>{pipelineModelName}</strong>
+        </div>
+        <div className="pipeline-readiness-item">
+          <span className="pipeline-readiness-label">Research Topic</span>
+          <strong>{activeTopic || 'Not set'}</strong>
+        </div>
+      </div>
+
+      <div className="pipeline-live-focus-card">
+        <div className="pipeline-live-focus-head">Current Node Activity</div>
+        <div className="pipeline-live-focus-title">
+          {isPipelineRunning
+            ? `Node: ${pipelineLiveNode || pipelineStages[activeStage]?.name || 'Initializing'}`
+            : 'Pipeline idle'}
+        </div>
+        <div className="pipeline-live-focus-text">
+          {pipelineLiveInsight || 'Run pipeline to inspect node-level research behavior.'}
+        </div>
       </div>
 
       {/* Pipeline status banner */}
@@ -64,6 +133,9 @@ export default function PipelineVisualizationPage() {
       <div className="pipeline-grid" id="pipeline-stages">
         {pipelineStages.map((stage, idx) => {
           const meta = STAGE_DETAILS[stage.id] || { color: 'var(--text-secondary)', bg: 'var(--bg-muted)' };
+          const isActive = stage.status === 'RUNNING';
+          const nodeText = stageResearchLabel(stage.id, activeTopic || 'public safety signals');
+
           return (
             <>
               <div
@@ -76,6 +148,9 @@ export default function PipelineVisualizationPage() {
                 <div className="pipeline-icon">{stage.icon}</div>
                 <div className="pipeline-name" style={{ color: meta.color }}>{stage.name}</div>
                 <div className="pipeline-desc">{stage.description}</div>
+                <div className={`pipeline-node-research${isActive ? ' active' : ''}`}>
+                  {isActive ? `Researching now: ${nodeText}` : nodeText}
+                </div>
 
                 {stage.status !== 'IDLE' && (
                   <div className="pipeline-stats">
@@ -112,6 +187,19 @@ export default function PipelineVisualizationPage() {
             </>
           );
         })}
+      </div>
+
+      <div className="card mt-20">
+        <div className="chart-title" style={{ marginBottom: 12 }}>🧭 Live Pipeline Activity</div>
+        <div className="pipeline-activity-feed">
+          {pipelineActivityFeed.length > 0 ? (
+            pipelineActivityFeed.map((item, index) => (
+              <div key={`pipe-feed-${index}`} className="pipeline-activity-item">{item}</div>
+            ))
+          ) : (
+            <div className="pipeline-activity-item">No activity yet. Run pipeline to see live node execution log.</div>
+          )}
+        </div>
       </div>
 
       {/* Stage detail cards */}
@@ -173,24 +261,37 @@ export default function PipelineVisualizationPage() {
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
             Topic: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{lastTopic}</span>
           </div>
-          <pre
-            style={{
-              margin: 0,
-              whiteSpace: 'pre-wrap',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 11,
-              lineHeight: 1.6,
-              color: 'var(--text-secondary)',
-              background: 'var(--bg-surface)',
-              border: '1px solid var(--border-subtle)',
-              borderRadius: 8,
-              padding: '14px',
-              maxHeight: 320,
-              overflowY: 'auto',
-            }}
-          >
-            {latestReport}
-          </pre>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10 }}>
+            Model: <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{pipelineModelName}</span> · Status: <span style={{ color: modelConfigured ? 'var(--risk-low)' : 'var(--risk-medium)', fontWeight: 700 }}>{modelBadge}</span>
+          </div>
+
+          {modelConfigured ? (
+            <pre
+              style={{
+                margin: 0,
+                whiteSpace: 'pre-wrap',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 11,
+                lineHeight: 1.6,
+                color: 'var(--text-secondary)',
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 8,
+                padding: '14px',
+                maxHeight: 320,
+                overflowY: 'auto',
+              }}
+            >
+              {latestReport}
+            </pre>
+          ) : (
+            <div className="pipeline-config-note">
+              <strong>Model is not fully configured.</strong>
+              <div style={{ marginTop: 6 }}>
+                {pipelineModelReason || 'Configure backend model keys, then rerun the pipeline to enable full Gemini briefing output.'}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

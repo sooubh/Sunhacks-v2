@@ -18,14 +18,9 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
 };
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { user, dashboardStats, setUser, isVoiceOpen, setVoiceOpen } = useAppStore();
+  const { user, setUser, isVoiceOpen, setVoiceOpen } = useAppStore();
   const navigate  = useNavigate();
   const location  = useLocation();
-
-  const badgeMap: Record<string, number> = {
-    active: dashboardStats.activeAlerts,
-    high:   dashboardStats.highRisk,
-  };
 
   const meta = PAGE_META[location.pathname] || { title: 'Leis', sub: '' };
 
@@ -37,58 +32,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-shell">
 
-      {/* ── Sidebar ── */}
-      <aside className="sidebar">
-
-        {/* Brand */}
-        <div className="sidebar-logo">
-          <div className="sidebar-logo-icon">🛡️</div>
-          <div>
-            <div className="sidebar-logo-text">Leis</div>
-            <div className="sidebar-logo-sub">OSINT Platform</div>
-          </div>
-        </div>
-
-        {/* Nav */}
-        <div className="sidebar-section-label">Navigation</div>
-        <nav className="sidebar-nav">
-          {NAV_ITEMS.map(item => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              id={`nav-${item.label.toLowerCase().replace(/\s+/g, '-')}`}
-              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-            >
-              <span className="nav-icon">{item.icon}</span>
-              <span>{item.label}</span>
-              {item.badgeKey && badgeMap[item.badgeKey] > 0 && (
-                <span className={`nav-badge ${item.badgeClass}`}>
-                  {badgeMap[item.badgeKey]}
-                </span>
-              )}
-            </NavLink>
-          ))}
-        </nav>
-
-        {/* Footer / User */}
-        <div className="sidebar-footer">
-          <div className="avatar">{user?.displayName?.[0] ?? 'A'}</div>
-          <div className="avatar-info">
-            <div className="avatar-name">{user?.displayName ?? 'Analyst'}</div>
-            <div className="avatar-role">{user?.role ?? 'ANALYST'}</div>
-          </div>
-          <button
-            id="logout-btn"
-            className="btn btn-ghost btn-xs"
-            onClick={handleLogout}
-            title="Logout"
-            style={{ padding: '4px 8px', fontSize: 12, flexShrink: 0 }}
-          >
-            ⎋
-          </button>
-        </div>
-      </aside>
-
       {/* ── Main area ── */}
       <div className="main-area">
 
@@ -98,6 +41,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="topbar-title">{meta.title}</div>
             <div className="topbar-subtitle">{meta.sub}</div>
           </div>
+
+          <nav className="topbar-route-nav" aria-label="Top navigation">
+            {NAV_ITEMS.map(item => (
+              <NavLink
+                key={`top-${item.to}`}
+                to={item.to}
+                className={({ isActive }) => `topbar-route-link${isActive ? ' active' : ''}`}
+              >
+                <span>{item.icon}</span>
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
+          </nav>
+
           <div className="topbar-spacer" />
 
           <div className="live-badge">
@@ -123,6 +80,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             title="Voice AI Assistant"
           >
             🎙 Voice AI
+          </button>
+
+          <div className="topbar-user-chip">
+            <span className="topbar-user-role">{user?.role ?? 'ANALYST'}</span>
+            <span className="topbar-user-name">{user?.displayName ?? 'Analyst'}</span>
+          </div>
+
+          <button
+            id="logout-btn"
+            className="btn btn-ghost btn-sm"
+            onClick={handleLogout}
+            title="Logout"
+          >
+            Logout
           </button>
         </header>
 

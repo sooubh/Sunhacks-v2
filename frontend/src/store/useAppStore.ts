@@ -1,7 +1,10 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { Alert, AlertStatus, DashboardStats, FilterType, PipelineStage, RiskLevel, AuditLog, User } from '../types';
 import { generateMockAlerts, generateMockAuditLogs, generateMockPipelineStages } from '../services/mockData';
 import { runTopic, streamTopic } from '../services/realtimeApi';
+
+type PipelineModelMode = 'unknown' | 'gemini' | 'fallback';
 
 interface AppState {
   // Auth
@@ -12,6 +15,7 @@ interface AppState {
   alerts: Alert[];
   activeFilter: FilterType;
   searchQuery: string;
+  selectedCity: string;
 
   // Dashboard
   dashboardStats: DashboardStats;
@@ -20,6 +24,13 @@ interface AppState {
   // Pipeline
   pipelineStages: PipelineStage[];
   isPipelineRunning: boolean;
+  pipelineModelMode: PipelineModelMode;
+  pipelineModelName: string;
+  pipelineModelReason: string;
+  pipelineActiveTopic: string;
+  pipelineLiveNode: string;
+  pipelineLiveInsight: string;
+  pipelineActivityFeed: string[];
 
   // Audit Logs
   auditLogs: AuditLog[];
@@ -36,6 +47,7 @@ interface AppState {
   setUser: (user: User | null) => void;
   setFilter: (filter: FilterType) => void;
   setSearchQuery: (q: string) => void;
+  setSelectedCity: (city: string) => void;
   resolveAlert: (id: string) => void;
   addAlert: (alert: Alert) => void;
   setVoiceOpen: (open: boolean) => void;
@@ -104,16 +116,47 @@ function computeStats(alerts: Alert[]): DashboardStats {
   };
 }
 
-export const useAppStore = create<AppState>((set, get) => ({
+function buildStageInsight(stageId: string, topic: string, itemsProcessed: number): string {
+  const shortTopic = topic.trim() || 'public safety signals';
+
+  switch (stageId) {
+    case 'collector':
+      return `Gathering source documents for "${shortTopic}" from APIs, RSS, and web search (${itemsProcessed} items).`;
+    case 'cleaner':
+      return `Deduplicating and normalizing collected records for "${shortTopic}" to improve signal quality.`;
+    case 'analyzer':
+      return `Extracting entities, sentiment, and event intent from "${shortTopic}" evidence clusters.`;
+    case 'predictor':
+      return `Calculating risk and escalation patterns for "${shortTopic}" using current evidence trends.`;
+    case 'reporter':
+      return `Generating explainable report narrative and action recommendations for "${shortTopic}".`;
+    default:
+      return `Processing topic "${shortTopic}".`;
+  }
+}
+
+function pushActivity(feed: string[], message: string): string[] {
+  return [message, ...feed].slice(0, 14);
+}
+
+export const useAppStore = create<AppState>()(persist((set, get) => ({
   user: null,
   isAuthenticated: false,
   alerts: initialAlerts,
   activeFilter: 'ALL',
   searchQuery: '',
+  selectedCity: '',
   dashboardStats: computeStats(initialAlerts),
   isCollecting: false,
   pipelineStages: generateMockPipelineStages(),
   isPipelineRunning: false,
+  pipelineModelMode: 'unknown',
+  pipelineModelName: 'Not detected',
+  pipelineModelReason: 'Run the pipeline to verify model configuration.',
+  pipelineActiveTopic: '',
+  pipelineLiveNode: '',
+  pipelineLiveInsight: 'Pipeline is idle.',
+  pipelineActivityFeed: [],
   auditLogs: initialLogs,
   isVoiceOpen: false,
   voiceQuery: '',
@@ -123,6 +166,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setUser: (user) => set({ user, isAuthenticated: !!user }),
   setFilter: (filter) => set({ activeFilter: filter }),
   setSearchQuery: (searchQuery) => set({ searchQuery }),
+  setSelectedCity: (selectedCity) => set({ selectedCity }),
 
   resolveAlert: (id) => {
     set(state => {
@@ -176,11 +220,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set(state => {
         const alerts = mergeAlerts(state.alerts, result.alerts);
+        const mode = String(result.meta?.mode ?? 'unknown');
+        const model = String(result.meta?.model ?? 'Not detected');
+        const reason = String(result.meta?.reason ?? '');
         return {
           isCollecting: false,
           alerts,
           dashboardStats: computeStats(alerts),
           pipelineStages: result.stages,
+          pipelineModelMode: mode === 'gemini' ? 'gemini' : 'fallback',
+          pipelineModelName: model,
+          pipelineModelReason: mode === 'gemini'
+            ? `Model configured successfully (${model}).`
+            : (reason || 'Backend returned fallback mode. Verify API keys and model access.'),
           auditLogs: generateMockAuditLogs(alerts).slice(0, 120),
           latestReport: result.report,
           lastTopic: result.topic,
@@ -210,6 +262,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const topic = pickTopic(get().searchQuery, get().voiceQuery);
     set({
       isPipelineRunning: true,
+      lastTopic: topic,
+      pipelineActiveTopic: topic,
+      pipelineLiveNode: 'collector',
+      pipelineLiveInsight: buildStageInsight('collector', topic, 0),
+      pipelineModelMode: 'unknown',
+      pipelineModelReason: 'Validating model configuration and preparing execution.',
+      pipelineActivityFeed: [`Queued pipeline run for topic "${topic}".`],
       pipelineStages: get().pipelineStages.map(stage => ({
         ...stage,
         status: 'IDLE',
@@ -238,10 +297,18 @@ export const useAppStore = create<AppState>((set, get) => ({
 
           set(state => ({
             pipelineStages: upsertStage(state.pipelineStages, stage),
+            pipelineLiveNode: stage.id,
+            pipelineLiveInsight: buildStageInsight(stage.id, topic, stage.itemsProcessed),
+            pipelineActivityFeed: pushActivity(
+              state.pipelineActivityFeed,
+              `${stage.name}: ${stage.status} (${stage.itemsProcessed} items, ${stage.processingTime}ms)`
+            ),
           }));
         },
         onResult: (result) => {
           const mode = String(result.meta?.mode ?? 'unknown');
+          const model = String(result.meta?.model ?? 'Not detected');
+          const reason = String(result.meta?.reason ?? '');
           if (mode === 'gemini') {
             console.info('[AI Debug] runPipeline completed with Gemini mode', {
               topic,
@@ -264,6 +331,22 @@ export const useAppStore = create<AppState>((set, get) => ({
               alerts,
               dashboardStats: computeStats(alerts),
               pipelineStages: result.stages,
+              pipelineModelMode: mode === 'gemini' ? 'gemini' : 'fallback',
+              pipelineModelName: model,
+              pipelineModelReason: mode === 'gemini'
+                ? `Model configured successfully (${model}).`
+                : (reason || 'Backend returned fallback mode. Verify API keys and model access.'),
+              pipelineActiveTopic: '',
+              pipelineLiveNode: '',
+              pipelineLiveInsight: mode === 'gemini'
+                ? `Pipeline completed for "${result.topic}" with configured model.`
+                : `Pipeline completed in fallback mode for "${result.topic}".`,
+              pipelineActivityFeed: pushActivity(
+                state.pipelineActivityFeed,
+                mode === 'gemini'
+                  ? `Completed with model ${model}.`
+                  : `Completed in fallback mode${reason ? `: ${reason}` : '.'}`,
+              ),
               auditLogs: generateMockAuditLogs(alerts).slice(0, 120),
               latestReport: result.report,
               lastTopic: result.topic,
@@ -274,13 +357,28 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
         onError: (error) => {
           console.error('[AI Debug] runPipeline stream failed', { topic, error });
-          set({ isPipelineRunning: false });
+          set(state => ({
+            isPipelineRunning: false,
+            pipelineActiveTopic: '',
+            pipelineLiveNode: '',
+            pipelineLiveInsight: `Pipeline failed: ${error}`,
+            pipelineModelMode: 'fallback',
+            pipelineModelReason: `Pipeline stream error: ${error}`,
+            pipelineActivityFeed: pushActivity(state.pipelineActivityFeed, `Error: ${error}`),
+          }));
           close();
           finish();
         },
       });
     });
   },
+}), {
+  name: 'leis-app-store',
+  partialize: (state) => ({
+    user: state.user,
+    isAuthenticated: state.isAuthenticated,
+    selectedCity: state.selectedCity,
+  }),
 }));
 
 export function getFilteredAlerts(alerts: Alert[], filter: FilterType, query: string): Alert[] {
