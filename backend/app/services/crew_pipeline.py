@@ -16,6 +16,11 @@ from ..config import Settings
 from ..models import AlertOut
 
 try:
+    from crewai import Agent, Task, Crew, Process
+except Exception:
+    Agent = Task = Crew = Process = None
+
+try:
     from google import genai
 except Exception:
     genai = None
@@ -52,6 +57,14 @@ class CrewReporter:
 
                 ollama_reason = ollama_meta.get("reason", "ollama_runtime_error")
                 ollama_model_errors = ollama_meta.get("model_errors", "")
+                continue
+
+            if provider == "crewai":
+                crew_text, crew_meta = self._generate_with_crewai(topic=topic, alerts=alerts)
+                if crew_text:
+                    return crew_text, crew_meta
+                
+                logger.warning("CrewAI provider failed or unavailable topic=%s", topic)
                 continue
 
             if genai is None:
