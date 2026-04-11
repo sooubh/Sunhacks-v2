@@ -196,6 +196,71 @@ class CrewReporter:
                 "model_errors": str(exc)[:240],
             }
 
+    def _generate_with_crewai(self, topic: str, alerts: list[AlertOut]) -> tuple[str | None, dict[str, str]]:
+        if Agent is None:
+            logger.warning("CrewAI package not installed or failed to import; skipping CrewAI mode topic=%s", topic)
+            return None, {"reason": "crewai_missing_or_unloadable"}
+        
+        if LangChainOllama is None or not self.settings.ollama_enabled:
+            logger.warning("LangChainOllama required for CrewAI basic model but unavailable topic=%s", topic)
+            return None, {"reason": "langchain_ollama_missing"}
+
+        try:
+            llm = LangChainOllama(
+                model=self.settings.ollama_llama_model,
+                base_url=self.settings.ollama_base_url,
+                temperature=0.2,
+                num_predict=400,
+                timeout=self.settings.ollama_request_timeout_seconds,
+            )
+        except TypeError:
+            llm = LangChainOllama(
+                model=self.settings.ollama_llama_model,
+                base_url=self.settings.ollama_base_url,
+                temperature=0.2,
+                num_predict=400,
+            )
+
+        serialized_alerts = self._serialize_alerts_compact(alerts)
+        
+        analyst = Agent(
+            role="OSINT Command-Center Analyst",
+            goal="Analyze public safety signals to write a concise, operationally useful intelligence report.",
+            backstory="An expert in law enforcement intelligence and threat analysis.",
+            verbose=False,
+            allow_delegation=False,
+            llm=llm
+        )
+
+        report_task = Task(
+            description=(
+                f"Analyze the following topic: {topic}\n"
+                f"Using these alerts:\n{serialized_alerts}\n"
+                "Write an operational report covering:\n"
+                "1) Situation Summary\n"
+                "2) Source Reliability\n"
+                "3) Risk Forecast\n"
+                "4) Priority Actions (3 bullets).\n"
+                "Keep it under 240 words total."
+            ),
+            expected_output="A concise operational intelligence report structured with headers.",
+            agent=analyst
+        )
+
+        try:
+            crew = Crew(
+                agents=[analyst],
+                tasks=[report_task],
+                verbose=False
+            )
+            logger.info("Starting CrewAI report generation topic=%s", topic)
+            result = crew.kickoff()
+            
+            return str(result), {"mode": "crewai", "model": self.settings.ollama_llama_model}
+        except Exception as exc:
+            logger.warning("CrewAI pipeline failed topic=%s error=%s", topic, exc)
+            return None, {"reason": "crewai_pipeline_failed", "model_errors": str(exc)[:240]}
+
     def _invoke_ollama_router(self, route: str, query: str) -> tuple[str, str]:
         def _build_client(model_name: str, num_predict: int):
             try:
