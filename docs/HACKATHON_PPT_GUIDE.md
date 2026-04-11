@@ -60,7 +60,7 @@ Include:
 - Backend (FastAPI, Pydantic)
 - Data sources (RSS + APIs)
 - Realtime channel (SSE)
-- CrewAI reporting module
+- Ollama/Gemini reporting module with deterministic fallback
 
 Keep this slide visual (boxes/arrows) and avoid dense text.
 

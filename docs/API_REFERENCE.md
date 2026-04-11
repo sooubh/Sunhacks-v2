@@ -43,26 +43,26 @@ Endpoint:
 - `GET /api/realtime/sources`
 
 Purpose:
-- Returns active source lists and whether each integration is enabled by key presence.
+- Returns current source-mode flags and AI provider readiness.
 
 Example response:
 
 ```json
 {
-  "rss_feeds": [
-    "https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms"
-  ],
-  "web_scraper_urls": [
-    "https://www.thehindu.com/news/national/"
-  ],
+  "rss_feeds": [],
+  "web_scraper_urls": [],
   "tavily_recent_days": 3,
   "integrations": {
     "tavily": true,
     "newsapi": true,
     "newsdata": true,
     "gnews": true,
-    "web_scraper": true,
-    "gemini_llm": true
+    "rss": false,
+    "web_scraper": false,
+    "gemini_llm": false,
+    "ollama_llm": true,
+    "local_only": true,
+    "active_reasoning_providers": ["ollama"]
   }
 }
 ```

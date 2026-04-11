@@ -81,7 +81,7 @@ Every alert includes:
    - Builds final alert objects with action recommendations.
 
 5. **Reporter**
-   - Generates final intelligence briefing (CrewAI or fallback deterministic report).
+   - Generates final intelligence briefing through Ollama/Gemini provider routing with deterministic fallback.
 
 ---
 

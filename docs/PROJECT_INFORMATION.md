@@ -2,106 +2,91 @@
 
 ## 1) Project Identity
 
-**Working Product Identity:** ConflictSense / LEIS Realtime Agent Platform
+Product identity:
+- LEIS Realtime Agent Platform (Sunhacks-v2)
 
-**Category:** Realtime OSINT Intelligence + AI-assisted risk triage
+Category:
+- Realtime OSINT intelligence and AI-assisted risk triage
 
-**Project Type:** Full-stack web application (frontend dashboard + backend API intelligence pipeline)
+Project type:
+- Full-stack web application (React frontend + FastAPI backend)
 
----
+## 2) Vision
 
-## 2) Vision Statement
-
-Enable teams to transform noisy, high-volume open-source information into:
+Convert high-volume public signals into:
 - actionable alerts,
-- explainable risk insights,
+- explainable risk insight,
 - and concise operational briefings,
 
-in near real time.
-
----
+with realtime visibility suitable for analysts and command workflows.
 
 ## 3) Mission Objectives
 
-- Improve speed of incident awareness.
-- Improve quality and consistency of risk prioritization.
-- Provide explainable outputs that analysts can verify.
-- Demonstrate an end-to-end AI architecture suitable for hackathon judging and rapid iteration.
-
----
+- Reduce time-to-awareness for emerging events.
+- Standardize risk prioritization with transparent scoring outputs.
+- Keep operations resilient under partial integration and AI failures.
+- Provide a strong end-to-end demo narrative for evaluation and onboarding.
 
 ## 4) Key Use Cases
 
-1. **Daily Monitoring**
-   - Analyst enters a watch topic.
-   - System returns prioritized alert list and trend insights.
-
-2. **Escalation Triage**
-   - Team reviews HIGH-risk alerts with evidence and recommendations.
-
-3. **Situation Briefing**
-   - Operations lead reviews generated AI narrative to summarize current state.
-
-4. **Demo/Judging Flow**
-   - Presenter shows pipeline stages in realtime with visual confidence and risk outputs.
-
----
+1. Daily monitoring
+   - Analyst runs topic and city-scoped intelligence scans.
+2. Escalation triage
+   - Team prioritizes HIGH-risk alerts with evidence and action recommendations.
+3. Realtime pipeline visibility
+   - Operators inspect stage progress and processing telemetry during live runs.
+4. Voice-assisted command support
+   - User queries current dashboard state through chat or live voice.
+5. Multi-city monitoring
+   - Auto-agent cycle runs repeated scans across configured city scopes.
 
 ## 5) Stakeholders
 
-- **Primary users:** security analysts / monitoring operators
-- **Secondary users:** supervisors, response coordinators
-- **Evaluation audience:** hackathon mentors and judges
+- Primary: analysts and monitoring operators
+- Secondary: command supervisors and response coordinators
+- Review audience: mentors, judges, technical evaluators
 
----
+## 6) Current Feature Inventory
 
-## 6) Feature Inventory (Current)
-
-- Topic-based run trigger.
-- Realtime stage updates.
-- Structured explainable alerts.
-- Dashboard KPIs and charts.
-- Pipeline visualization interface.
-- Audit/log view in frontend workflow.
-- CrewAI report generation (when configured).
-
----
+- Topic-based intelligence run (sync and stream modes)
+- Five-stage OSINT pipeline with stage telemetry
+- Explainable alerts (risk/confidence/evidence/actions)
+- AI report generation with provider-routing fallback
+- Dashboard KPIs, charts, and map-oriented views
+- Voice assistant (smart chat + live voice websocket)
+- Firestore persistence for runs, alerts, snapshots, and transcripts
+- Auto-monitor cycle for multiple cities
 
 ## 7) Demo Readiness Checklist
 
-- [ ] Backend started and reachable.
-- [ ] Frontend running in browser.
-- [ ] At least one data source key configured (or RSS-only fallback).
-- [ ] Optional OpenAI key for richer CrewAI report.
-- [ ] Test topic prepared for live run.
-- [ ] Backup mock/fallback path understood if external APIs fail.
+- [ ] Backend running and reachable at local API URL
+- [ ] Frontend running and connected to backend
+- [ ] At least one source key configured (or expected low-signal fallback)
+- [ ] AI runtime prepared:
+  - [ ] Ollama reachable for local report reasoning, or
+  - [ ] Gemini key configured for cloud reasoning/voice
+- [ ] Test topic prepared for live walkthrough
+- [ ] Backup fallback story prepared (deterministic mode and mock UI fallback)
 
----
+## 8) Constraints and Risks
 
-## 8) Risks and Constraints
+- External API quota/rate limits and provider downtime
+- Variability in source quality and timeliness
+- Heuristic scoring limitations for nuanced context
+- No canonical backend database for persistent historical analytics
 
-- External API rate limits or downtime.
-- Signal quality variability across sources.
-- Heuristic scoring may need tuning for domain specificity.
-- No persistent database means run state is session-scoped.
+## 9) Success Metrics (Suggested)
 
----
+- Time to first actionable alert
+- % alerts with usable evidence links
+- % runs completed without hard failure
+- Analyst confidence in recommendation quality
+- Demo completion reliability under degraded provider conditions
 
-## 9) Future Roadmap (Post-Hackathon)
+## 10) Post-Hackathon Roadmap
 
-- Persist runs and alerts in a database.
-- Add user roles and secure auth.
-- Build source reliability analytics.
-- Add geospatial visualization for incidents.
-- Add model-assisted entity extraction and multilingual support.
-- Add feedback loop for analyst-confirmed alert quality.
-
----
-
-## 10) Success Metrics (Suggested)
-
-- Time to generate first actionable alert.
-- Percentage of alerts with usable evidence links.
-- Analyst trust score for recommendations.
-- Reduction in manual triage time.
-- Demo completion reliability under poor network/API conditions.
+- Enable richer source mix in default collector strategy
+- Add durable backend data persistence and query layer
+- Add backend authentication/authorization enforcement
+- Add analyst feedback loop for risk calibration
+- Expand multilingual and entity intelligence depth
