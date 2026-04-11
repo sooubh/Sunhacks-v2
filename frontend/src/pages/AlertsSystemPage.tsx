@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAppStore, getFilteredAlerts } from '../store/useAppStore';
 import type { FilterType } from '../types';
 import ExplainableAlertCard from '../components/ExplainableAlertCard';
-import { CITY_OPTIONS, getCityFromLocation, normalizeCityScope } from '../config/cities';
+import { CITY_OPTIONS, CITY_SELECTION_OPTIONS, OVERALL_CITY_OPTION, getCityFromLocation, normalizeCityScope, isOverallCitySelection } from '../config/cities';
 
 const FILTERS: { label: string; key: FilterType; cls: string }[] = [
   { label: 'All Alerts',   key: 'ALL',      cls: '' },
@@ -52,10 +52,13 @@ export default function AlertsSystemPage() {
   const [riskOnly, setRiskOnly] = useState<string>('ALL');
   const [autoOpenAlertId, setAutoOpenAlertId] = useState<string | null>(null);
 
-  const effectiveCity = normalizeCityScope(selectedCity) ?? CITY_OPTIONS[0];
+  const normalizedSelectedCity = normalizeCityScope(selectedCity);
+  const isOverallScope = isOverallCitySelection(selectedCity);
+  const effectiveCity = normalizedSelectedCity ?? CITY_OPTIONS[0];
+  const scopeLabel = isOverallScope ? 'All Cities' : effectiveCity;
 
   useEffect(() => {
-    if (!normalizeCityScope(selectedCity)) {
+    if (!isOverallCitySelection(selectedCity) && !normalizeCityScope(selectedCity)) {
       setSelectedCity(CITY_OPTIONS[0]);
     }
   }, [selectedCity, setSelectedCity]);
@@ -82,13 +85,17 @@ export default function AlertsSystemPage() {
     navigate(location.pathname, { replace: true, state: null });
   }, [alerts, location.pathname, location.state, navigate, setFilter, setSearchQuery, setSelectedCity]);
 
-  const cityScopedAllAlerts = useMemo(
-    () => alerts.filter(a => getCityFromLocation(a.location) === effectiveCity),
-    [alerts, effectiveCity],
-  );
+  const cityScopedAllAlerts = useMemo(() => {
+    if (isOverallScope) {
+      return alerts;
+    }
+    return alerts.filter(a => getCityFromLocation(a.location) === effectiveCity);
+  }, [alerts, effectiveCity, isOverallScope]);
 
   const filtered = getFilteredAlerts(alerts, activeFilter, searchQuery);
-  const cityScopedFiltered = filtered.filter(a => getCityFromLocation(a.location) === effectiveCity);
+  const cityScopedFiltered = isOverallScope
+    ? filtered
+    : filtered.filter(a => getCityFromLocation(a.location) === effectiveCity);
   const display = riskOnly === 'ALL' ? cityScopedFiltered : cityScopedFiltered.filter(a => a.riskLevel === riskOnly);
 
   const cityStats = computeCityScopedStats(cityScopedAllAlerts);
@@ -119,7 +126,7 @@ export default function AlertsSystemPage() {
       <div className="page-header">
         <div className="page-title">Alerts System</div>
         <div className="page-desc">
-          AI-powered explainable intelligence reports with evidence tracing · City Scope: {effectiveCity || dashboardStats.topLocation}
+          AI-powered explainable intelligence reports with evidence tracing · City Scope: {scopeLabel || dashboardStats.topLocation}
         </div>
       </div>
 
@@ -197,10 +204,10 @@ export default function AlertsSystemPage() {
           <select
             id="alerts-city-filter"
             className="city-filter-select"
-            value={effectiveCity}
+            value={isOverallScope ? OVERALL_CITY_OPTION : effectiveCity}
             onChange={e => setSelectedCity(e.target.value)}
           >
-            {CITY_OPTIONS.map(city => (
+            {CITY_SELECTION_OPTIONS.map(city => (
               <option key={city} value={city}>{city}</option>
             ))}
           </select>
@@ -240,11 +247,11 @@ export default function AlertsSystemPage() {
       <div className="alerts-split-layout">
         <section className="alerts-main-pane">
           <div className="alerts-rectangle-box">
-            <div className="chart-title" style={{ marginBottom: 12 }}>🚨 City-Wise Alerts · {effectiveCity}</div>
+            <div className="chart-title" style={{ marginBottom: 12 }}>🚨 City-Wise Alerts · {scopeLabel}</div>
             {display.length === 0 ? (
               <div className="empty-state" style={{ minHeight: 200 }}>
                 <div className="empty-state-icon">🔍</div>
-                <div className="empty-state-text">No alerts match current filters for {effectiveCity || 'selected city'}</div>
+                <div className="empty-state-text">No alerts match current filters for {scopeLabel}</div>
               </div>
             ) : (
               <div className="alerts-rectangle-list">
@@ -298,7 +305,7 @@ export default function AlertsSystemPage() {
               </div>
             </div>
             <div className="alerts-side-note">
-              Live monitoring scope is synced with dashboard city selection.
+              Live monitoring scope is synced with dashboard city selection. Overall shows aggregated all-city data.
             </div>
           </div>
         </aside>

@@ -237,186 +237,248 @@ export default function AlertInsightModal({
       const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
-      const margin = 42;
-      const maxTextWidth = pageWidth - (margin * 2);
+      const margin = 36;
+      const footerReserved = 24;
+      const contentWidth = pageWidth - (margin * 2);
+      const pageBottom = pageHeight - margin - footerReserved;
+      const generatedAt = format(new Date(), 'dd MMM yyyy · HH:mm:ss');
+
+      const palette = {
+        ink: [17, 24, 39] as const,
+        muted: [71, 85, 105] as const,
+        border: [203, 213, 225] as const,
+        panelFill: [248, 250, 252] as const,
+        panelHeaderFill: [239, 246, 255] as const,
+        panelHeaderText: [30, 64, 175] as const,
+        accent: [37, 99, 235] as const,
+      };
+
+      const riskColors: Record<Alert['riskLevel'], { bg: [number, number, number]; text: [number, number, number] }> = {
+        HIGH: { bg: [254, 226, 226], text: [153, 27, 27] },
+        MEDIUM: { bg: [255, 237, 213], text: [154, 52, 18] },
+        LOW: { bg: [220, 252, 231], text: [22, 101, 52] },
+      };
+
+      const impactColors: Record<'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL', [number, number, number]> = {
+        LOW: [34, 197, 94],
+        MEDIUM: [249, 115, 22],
+        HIGH: [239, 68, 68],
+        CRITICAL: [185, 28, 28],
+      };
+
       let y = margin;
 
-      const ensureSpace = (requiredHeight = 16) => {
-        if (y + requiredHeight > pageHeight - margin) {
+      const applyTextColor = (rgb: readonly [number, number, number]) => {
+        doc.setTextColor(rgb[0], rgb[1], rgb[2]);
+      };
+
+      const ensureSpace = (requiredHeight = 18) => {
+        if (y + requiredHeight > pageBottom) {
           doc.addPage();
           y = margin;
         }
       };
 
-      const addHeading = (text: string, level: 1 | 2 | 3 = 2) => {
-        const size = level === 1 ? 18 : level === 2 ? 14 : 12;
-        const spacing = level === 1 ? 24 : 19;
-        ensureSpace(spacing + 6);
+      const splitLines = (text: string, width: number, size = 10, style: 'normal' | 'bold' = 'normal'): string[] => {
+        doc.setFont('helvetica', style);
+        doc.setFontSize(size);
+        return doc.splitTextToSize(text, width) as string[];
+      };
+
+      const addHeaderBanner = () => {
+        const headerHeight = 104;
+        ensureSpace(headerHeight + 12);
+
+        doc.setFillColor(palette.ink[0], palette.ink[1], palette.ink[2]);
+        doc.roundedRect(margin, y, contentWidth, headerHeight, 12, 12, 'F');
+
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(size);
-        doc.setTextColor(15, 23, 42);
-        doc.text(text, margin, y);
-        y += spacing;
+        doc.setFontSize(18);
+        doc.setTextColor(255, 255, 255);
+        const titleLines = splitLines(alert.title, contentWidth - 168, 18, 'bold').slice(0, 2);
+        doc.text(titleLines, margin + 14, y + 28);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(226, 232, 240);
+        doc.text(`Alert ID: ${alert.id}`, margin + 14, y + 60);
+        doc.text(`Location: ${alert.location}`, margin + 14, y + 76);
+        doc.text(`Generated: ${generatedAt}`, margin + 14, y + 92);
+
+        const riskTone = riskColors[alert.riskLevel];
+        const badgeX = margin + contentWidth - 110;
+        const badgeY = y + 14;
+        doc.setFillColor(riskTone.bg[0], riskTone.bg[1], riskTone.bg[2]);
+        doc.roundedRect(badgeX, badgeY, 92, 24, 8, 8, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.setTextColor(riskTone.text[0], riskTone.text[1], riskTone.text[2]);
+        doc.text(alert.riskLevel, badgeX + 46, badgeY + 16, { align: 'center' });
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(255, 255, 255);
+        doc.text(`${alert.category} · ${alert.sentiment}`, badgeX + 46, badgeY + 44, { align: 'center' });
+        y += headerHeight + 12;
       };
 
-      const addText = (
-        text: string,
-        options?: {
-          bold?: boolean;
-          size?: number;
-          spacing?: number;
-          indent?: number;
-        },
-      ) => {
-        const bold = options?.bold ?? false;
-        const size = options?.size ?? 11;
-        const spacing = options?.spacing ?? 15;
-        const indent = options?.indent ?? 0;
+      const addMetricCards = () => {
+        const cardGap = 8;
+        const cardCount = 4;
+        const cardWidth = (contentWidth - (cardGap * (cardCount - 1))) / cardCount;
+        const cardHeight = 60;
+        ensureSpace(cardHeight + 12);
 
-        doc.setFont('helvetica', bold ? 'bold' : 'normal');
-        doc.setFontSize(size);
-        doc.setTextColor(31, 41, 55);
+        const cards = [
+          { label: 'Confidence', value: `${alert.confidence}%`, tone: [37, 99, 235] as const },
+          { label: 'Escalation', value: `${alert.escalationProbability}%`, tone: [234, 88, 12] as const },
+          { label: 'Impact', value: civilianImpact, tone: impactColors[civilianImpact] },
+          { label: 'Status', value: alert.status, tone: [22, 101, 52] as const },
+        ];
 
-        const lines = doc.splitTextToSize(text, maxTextWidth - indent);
-        lines.forEach((line: string) => {
-          ensureSpace(spacing);
-          doc.text(line, margin + indent, y);
-          y += spacing;
+        cards.forEach((card, index) => {
+          const x = margin + (index * (cardWidth + cardGap));
+          doc.setFillColor(248, 250, 252);
+          doc.setDrawColor(226, 232, 240);
+          doc.roundedRect(x, y, cardWidth, cardHeight, 10, 10, 'FD');
+
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(9);
+          doc.setTextColor(100, 116, 139);
+          doc.text(card.label, x + 10, y + 18);
+
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(14);
+          doc.setTextColor(card.tone[0], card.tone[1], card.tone[2]);
+          doc.text(card.value, x + 10, y + 40);
         });
+
+        y += cardHeight + 12;
       };
 
-      const addList = (items: string[]) => {
-        if (!items.length) {
-          addText('- N/A');
-          return;
-        }
+      const addPanel = (title: string, lines: string[]) => {
+        const bodyWidth = contentWidth - 24;
+        const wrapped: string[] = [];
 
-        items.forEach((item, index) => {
-          addText(`${index + 1}. ${item}`);
+        lines.forEach((line) => {
+          const safeLine = line.trim();
+          if (!safeLine) {
+            wrapped.push('');
+            return;
+          }
+          const split = splitLines(safeLine, bodyWidth, 10, 'normal');
+          wrapped.push(...split);
         });
+
+        const lineHeight = 13;
+        const panelHeaderHeight = 24;
+        const panelBodyHeight = Math.max(24, wrapped.length * lineHeight + 10);
+        const panelHeight = panelHeaderHeight + panelBodyHeight;
+        ensureSpace(panelHeight + 10);
+
+        doc.setFillColor(palette.panelFill[0], palette.panelFill[1], palette.panelFill[2]);
+        doc.setDrawColor(palette.border[0], palette.border[1], palette.border[2]);
+        doc.roundedRect(margin, y, contentWidth, panelHeight, 10, 10, 'FD');
+
+        doc.setFillColor(palette.panelHeaderFill[0], palette.panelHeaderFill[1], palette.panelHeaderFill[2]);
+        doc.roundedRect(margin, y, contentWidth, panelHeaderHeight, 10, 10, 'F');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        applyTextColor(palette.panelHeaderText);
+        doc.text(title, margin + 12, y + 16);
+
+        let textY = y + panelHeaderHeight + 14;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        applyTextColor(palette.muted);
+        wrapped.forEach((line) => {
+          if (!line) {
+            textY += lineHeight;
+            return;
+          }
+          doc.text(line, margin + 12, textY);
+          textY += lineHeight;
+        });
+
+        y += panelHeight + 10;
       };
 
-      addHeading('Alert Intelligence Report', 1);
-      addText(`Generated At: ${format(new Date(), 'dd MMM yyyy · HH:mm:ss')}`);
-      addText('Report Type: Full Intelligence Export');
-      y += 4;
+      const summaryLines = summaryPoints.map((point, index) => `${index + 1}. ${point}`);
+      const narrativeLines = detailedNarrative.map((paragraph, index) => `${index + 1}. ${paragraph}`);
+      const snapshotLines = dataSnapshot.map((item) => `${item.label}: ${item.value}`);
+      const entityLines = alert.entities.length > 0
+        ? alert.entities.map((entity) => `- ${entity.type}: ${entity.name}`)
+        : ['- No entities detected'];
+      const keywordLines = alert.keywords.length > 0
+        ? [alert.keywords.join(', ')]
+        : ['No keywords detected'];
+      const evidenceLines = alert.evidence.length > 0
+        ? alert.evidence.flatMap((item, index) => [
+          `[C${index + 1}] ${item.source} · Fetched ${item.fetchedAt}`,
+          `Excerpt: ${item.excerpt}`,
+          `Link: ${item.url}`,
+          '',
+        ])
+        : ['No citation evidence available'];
 
-      addHeading('Executive Overview', 2);
-      addList([
-        `Alert ID: ${alert.id}`,
-        `Title: ${alert.title}`,
-        `Location: ${alert.location}`,
-        `Category: ${alert.category}`,
-        `Status: ${alert.status}`,
-        `Risk Level: ${alert.riskLevel}`,
-        `Sentiment: ${alert.sentiment}`,
-        `Confidence: ${alert.confidence}%`,
-        `Escalation Probability: ${alert.escalationProbability}%`,
-        `Civilian Impact: ${civilianImpact}`,
-        `Assigned Role: ${role}`,
-        `Created: ${format(alert.createdAt, 'dd MMM yyyy · HH:mm:ss')}`,
-        `Updated: ${format(alert.updatedAt, 'dd MMM yyyy · HH:mm:ss')}`,
-      ]);
-
-      y += 6;
-      addHeading('Summary Report (Point-wise)', 2);
-      addList(summaryPoints);
-
-      y += 6;
-      addHeading('Detailed Intelligence Narrative', 2);
-      addList(detailedNarrative);
-
-      y += 6;
-      addHeading('All Data Snapshot', 2);
-      addList(dataSnapshot.map((item) => `${item.label}: ${item.value}`));
-
-      y += 6;
-      addHeading('Entities', 2);
-      addList(alert.entities.map((entity) => `[${entity.type}] ${entity.name}`));
-
-      y += 6;
-      addHeading('Keywords', 2);
-      addList(alert.keywords);
-
-      y += 6;
-      addHeading('Why Triggered', 2);
-      addText(alert.whyTriggered);
-
-      y += 6;
-      addHeading('Link Citations and Evidence Details', 2);
-      if (alert.evidence.length > 0) {
-        alert.evidence.forEach((item, index) => {
-          addText(`[C${index + 1}] ${item.source} | Fetched: ${item.fetchedAt}`, { bold: true });
-          addText(`Excerpt: ${item.excerpt}`, { indent: 10 });
-          addText(`URL: ${item.url}`, { indent: 10, size: 10 });
-          y += 3;
-        });
-      } else {
-        addText('- No citation evidence available');
-      }
-
-      y += 6;
-      addHeading('Future Prediction (Informative)', 2);
-      addList([
+      const forecastLines = [
         `Outlook: ${prediction.heading}`,
-        `Next 6 Hours: ${prediction.next6h}`,
-        `Next 24 Hours: ${prediction.next24h}`,
-        `Next 48 Hours: ${prediction.next48h}`,
-      ]);
+        `Next 6 hours: ${prediction.next6h}`,
+        `Next 24 hours: ${prediction.next24h}`,
+        `Next 48 hours: ${prediction.next48h}`,
+      ];
 
-      y += 4;
-      addHeading('Likely Triggers', 3);
-      addList(prediction.likelyTriggers);
+      const triggerLines = prediction.likelyTriggers.map((item, index) => `${index + 1}. ${item}`);
+      const signalLines = prediction.mitigationSignals.map((item, index) => `${index + 1}. ${item}`);
+      const actionLines = alert.recommendedActions.length > 0
+        ? alert.recommendedActions.map((item, index) => `${index + 1}. ${item}`)
+        : ['No recommended actions'];
+      const assessedAreaLines = assessedAreas.length > 0
+        ? assessedAreas.map((area, index) => `${index + 1}. ${area}`)
+        : ['No assessed areas'];
+      const sourceLines = alert.sources.length > 0
+        ? alert.sources.map((source, index) => {
+          const fetched = format(source.fetchedAt, 'dd MMM yyyy · HH:mm:ss');
+          return `${index + 1}. ${source.name} (${source.type}) · ${fetched} · ${source.url}`;
+        })
+        : ['No source registry entries'];
 
-      y += 4;
-      addHeading('Stabilization Signals to Watch', 3);
-      addList(prediction.mitigationSignals);
-
-      y += 6;
-      addHeading('Recommended Actions', 2);
-      addList(alert.recommendedActions);
-
-      y += 6;
-      addHeading('Metrics Panel', 2);
-      addList([
-        `Confidence Score: ${alert.confidence}%`,
-        `Escalation: ${alert.escalationProbability}%`,
-        `Civilian Impact: ${civilianImpact}`,
-        `User Role: ${role}`,
-      ]);
-
-      y += 6;
-      addHeading('Assessed Areas', 2);
-      addList(assessedAreas);
-
-      y += 6;
-      addHeading('Source Registry', 2);
-      if (alert.sources.length > 0) {
-        addList(
-          alert.sources.map(
-            (source) =>
-              `${source.name} (${source.type}) | Fetched: ${format(source.fetchedAt, 'dd MMM yyyy · HH:mm:ss')} | URL: ${source.url}`,
-          ),
-        );
-      } else {
-        addText('- No source registry entries available');
-      }
-
-      y += 6;
-      addHeading('Scenario Predictor (Latest Session)', 2);
-      addList([
-        `Prompt: ${scenarioPrompt.trim() || 'Not provided'}`,
+      const scenarioLines = [
+        `Prompt: ${scenarioPrompt.trim() || 'Not provided in this session.'}`,
         `Output: ${scenarioResult || 'No scenario generated in this session.'}`,
-      ]);
+      ];
 
-      y += 6;
-      addHeading('Footer', 2);
-      addList([
-        typeof currentIndex === 'number' && typeof totalCount === 'number'
-          ? `Alert Position: ${currentIndex} of ${totalCount}`
-          : 'Alert Position: N/A',
-        `Last Updated: ${format(alert.updatedAt, 'dd MMM yyyy · HH:mm:ss')}`,
-      ]);
+      addHeaderBanner();
+      addMetricCards();
+
+      addPanel('Situation Summary', summaryLines);
+      addPanel('Detailed Intelligence Narrative', narrativeLines);
+      addPanel('Data Snapshot', snapshotLines);
+      addPanel('Entities', entityLines);
+      addPanel('Keywords', keywordLines);
+      addPanel('Why Triggered', [alert.whyTriggered]);
+      addPanel('Evidence and Citations', evidenceLines);
+      addPanel('Future Forecast', forecastLines);
+      addPanel('Likely Triggers', triggerLines);
+      addPanel('Stabilization Signals', signalLines);
+      addPanel('Recommended Actions', actionLines);
+      addPanel('Assessed Areas', assessedAreaLines);
+      addPanel('Source Registry', sourceLines);
+      addPanel('Scenario Predictor (Latest Session)', scenarioLines);
+
+      const pageCount = doc.getNumberOfPages();
+      for (let page = 1; page <= pageCount; page += 1) {
+        doc.setPage(page);
+        doc.setDrawColor(palette.border[0], palette.border[1], palette.border[2]);
+        doc.line(margin, pageHeight - 22, pageWidth - margin, pageHeight - 22);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        applyTextColor(palette.muted);
+        doc.text(`${alert.id} · ${alert.location} · ${generatedAt}`, margin, pageHeight - 10);
+        doc.text(`Page ${page} of ${pageCount}`, pageWidth - margin, pageHeight - 10, { align: 'right' });
+      }
 
       doc.save(`${alert.id}-full-intelligence-report.pdf`);
       setActionMessage('Full PDF report exported successfully.');

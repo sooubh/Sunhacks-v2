@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store/useAppStore';
-import { askVoiceAssistant, type AssistantMode, type VoiceDashboardContext } from '../services/realtimeApi';
+import { askVoiceAssistant, type AssistantMode, type VoiceAssistantResult, type VoiceDashboardContext } from '../services/realtimeApi';
 import { persistVoiceTranscript } from '../services/firebaseDataService';
 import type { Alert } from '../types';
 import {
@@ -20,6 +20,9 @@ type LiveStatus = 'CONNECTING' | 'LIVE' | 'OFFLINE';
 
 const SPEECH_RMS_THRESHOLD = 0.01;
 const END_TURN_SILENCE_MS = 900;
+const LIVE_RECONNECT_BASE_MS = 1800;
+const LIVE_RECONNECT_MAX_MS = 12000;
+const LIVE_RECONNECT_MAX_ATTEMPTS = 8;
 
 function flattenText(value: string, maxLength = 500): string {
   const compact = value.replace(/\s+/g, ' ').trim();
@@ -65,26 +68,6 @@ function findRequestedAlert(query: string, alerts: Alert[]): Alert | null {
   }
 
   return null;
-}
-
-function getLocalSmartChatFallbackResponse(
-  query: string,
-  state: ReturnType<typeof useAppStore.getState>,
-): string {
-  const stats = state.dashboardStats;
-  const topAlert = state.alerts
-    .filter(alert => alert.status === 'ACTIVE')
-    .sort((a, b) => b.confidence - a.confidence)[0];
-
-  return [
-    `Situation: You asked "${query}". Live AI is unavailable, so this is a local smart analysis from current dashboard data.`,
-    `Risk Snapshot: active=${stats.activeAlerts}, high=${stats.highRisk}, medium=${stats.mediumRisk}, low=${stats.lowRisk}; top area=${stats.topLocation}.`,
-    `Signal Flow Diagram: incoming query -> context scan -> risk prioritization -> response recommendation.`,
-    'Recommended Actions:',
-    `1) Prioritize ${stats.highRisk > 0 ? `${stats.highRisk} HIGH risk` : 'active'} incidents in ${stats.topLocation}.`,
-    `2) Validate latest signal: ${topAlert ? `${topAlert.title} (${topAlert.location})` : 'run a fresh pipeline cycle'}.`,
-    '3) Reassess escalation probability after the next data refresh window.',
-  ].join('\n');
 }
 
 function speakText(text: string): void {
@@ -227,6 +210,11 @@ export default function VoiceAssistantDialog() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const liveClientRef = useRef<LiveVoiceSessionClient | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const assistantModeRef = useRef<AssistantMode>('chat');
+  const isMountedRef = useRef(true);
+  const liveSessionIdRef = useRef(0);
 
   const currentTurnUserQueryRef = useRef('');
   const assistantDraftIndexRef = useRef<number | null>(null);
@@ -261,6 +249,10 @@ export default function VoiceAssistantDialog() {
       continuousSessionActiveRef.current = false;
     }
   }, [continuousMode]);
+
+  useEffect(() => {
+    assistantModeRef.current = assistantMode;
+  }, [assistantMode]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -377,12 +369,64 @@ export default function VoiceAssistantDialog() {
     }
   };
 
-  const connectLiveSession = async (announce = false): Promise<boolean> => {
+  const clearReconnectTimer = () => {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  };
+
+  const scheduleLiveReconnect = (reason: string) => {
+    if (!isMountedRef.current) return;
+    if (assistantModeRef.current !== 'voice') return;
+    if (liveClientRef.current?.isConnected()) {
+      reconnectAttemptRef.current = 0;
+      clearReconnectTimer();
+      return;
+    }
+    if (reconnectTimerRef.current !== null) return;
+
+    if (reconnectAttemptRef.current >= LIVE_RECONNECT_MAX_ATTEMPTS) {
+      setLiveStatus('OFFLINE');
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'ai',
+          text: 'Voice channel is still offline after multiple retries. Switch to Smart Chat and try voice again in a moment.',
+          time: new Date().toLocaleTimeString(),
+        },
+      ]);
+      return;
+    }
+
+    const attempt = reconnectAttemptRef.current + 1;
+    const delay = Math.min(LIVE_RECONNECT_MAX_MS, LIVE_RECONNECT_BASE_MS * (2 ** reconnectAttemptRef.current));
+    reconnectAttemptRef.current = attempt;
+    setLiveStatus('CONNECTING');
+
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      void connectLiveSession(false, `retry_${reason}_${attempt}`);
+    }, delay);
+  };
+
+  const connectLiveSession = async (announce = false, reason = 'manual'): Promise<boolean> => {
     const dashboardContext = buildDashboardContext(storeState(), conversationContext());
 
+    clearReconnectTimer();
+    if (liveClientRef.current) {
+      liveClientRef.current.close('replace_session');
+      liveClientRef.current = null;
+    }
+
+    const sessionId = liveSessionIdRef.current + 1;
+    liveSessionIdRef.current = sessionId;
     setLiveStatus('CONNECTING');
     const liveClient = new LiveVoiceSessionClient({
       onReady: () => {
+        if (!isMountedRef.current || sessionId !== liveSessionIdRef.current) return;
+        reconnectAttemptRef.current = 0;
+        clearReconnectTimer();
         setLiveStatus('LIVE');
         if (announce) {
           setMessages(prev => [
@@ -452,6 +496,7 @@ export default function VoiceAssistantDialog() {
         }
       },
       onError: (message) => {
+        if (!isMountedRef.current || sessionId !== liveSessionIdRef.current) return;
         stopMicCapture(false);
         continuousSessionActiveRef.current = false;
         awaitingTurnCompletionRef.current = false;
@@ -466,12 +511,15 @@ export default function VoiceAssistantDialog() {
             time: new Date().toLocaleTimeString(),
           },
         ]);
+        scheduleLiveReconnect('socket_error');
       },
       onClose: () => {
+        if (!isMountedRef.current || sessionId !== liveSessionIdRef.current) return;
         stopMicCapture(false);
         continuousSessionActiveRef.current = false;
         awaitingTurnCompletionRef.current = false;
         setLiveStatus('OFFLINE');
+        scheduleLiveReconnect('socket_close');
       },
     });
 
@@ -484,7 +532,8 @@ export default function VoiceAssistantDialog() {
       return true;
     } catch (error) {
       setLiveStatus('OFFLINE');
-      console.warn('[VoiceAI Debug] Live websocket connect failed', error);
+      console.warn('[VoiceAI Debug] Live websocket connect failed', { error, reason });
+      scheduleLiveReconnect('connect_failed');
       return false;
     }
   };
@@ -503,12 +552,15 @@ export default function VoiceAssistantDialog() {
         ...prev,
         {
           role: 'ai',
-          text: 'Cannot start live mic because websocket session is offline. Use typed query fallback.',
+          text: 'Cannot start live mic because the realtime voice channel is offline. Switch to Smart Chat (Gemini text) and retry voice in a few seconds.',
           time: new Date().toLocaleTimeString(),
         },
       ]);
       return;
     }
+
+    const latestContext = buildDashboardContext(storeState(), conversationContext());
+    liveClientRef.current?.sendContext(latestContext);
 
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const context = new AudioContext();
@@ -579,9 +631,13 @@ export default function VoiceAssistantDialog() {
   };
 
   useEffect(() => {
-    void connectLiveSession(false);
+    isMountedRef.current = true;
+    void connectLiveSession(false, 'initial_mount');
 
     return () => {
+      isMountedRef.current = false;
+      clearReconnectTimer();
+      liveSessionIdRef.current += 1;
       continuousSessionActiveRef.current = false;
       awaitingTurnCompletionRef.current = false;
       stopMicCapture(false);
@@ -596,6 +652,12 @@ export default function VoiceAssistantDialog() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (assistantMode !== 'voice') return;
+    if (liveClientRef.current?.isConnected()) return;
+    void connectLiveSession(true, 'mode_switch');
+  }, [assistantMode]);
 
   const sendMessage = async (text: string) => {
     const query = text.trim();
@@ -653,7 +715,14 @@ export default function VoiceAssistantDialog() {
 
     setIsAiResponding(true);
     try {
-      const result = await askVoiceAssistant(query, dashboardContext, 'chat');
+      let result: VoiceAssistantResult;
+      try {
+        result = await askVoiceAssistant(query, dashboardContext, 'chat');
+      } catch (firstError) {
+        console.warn('[VoiceAI Debug] Smart chat primary attempt failed, retrying once', firstError);
+        result = await askVoiceAssistant(query, dashboardContext, 'chat');
+      }
+
       const outputText = (result.reply || '').trim();
       setMessages(prev => [
         ...prev,
@@ -669,37 +738,22 @@ export default function VoiceAssistantDialog() {
         topic: dashboardContext.topic,
         query,
         reply: result.reply,
-        provider: 'ai',
-        model: 'runtime',
-        mode: 'chat_runtime',
+        provider: result.provider,
+        model: result.model,
+        mode: result.mode,
       }).catch((persistError) => {
-        console.warn('[Firebase] Failed to persist fallback endpoint transcript', { persistError });
+        console.warn('[Firebase] Failed to persist smart chat transcript', { persistError });
       });
     } catch (error) {
-      const state = storeState();
-      const fallbackResponse = getLocalSmartChatFallbackResponse(query, { ...state, voiceQuery: query });
       setMessages(prev => [
         ...prev,
         {
           role: 'ai',
-          text: `${fallbackResponse}\n\nNote: live and backend AI chat endpoints were unavailable, so local fallback was used.`,
+          text: 'Gemini Smart Chat is temporarily unavailable. Please retry in a few seconds while pipeline data continues syncing.',
           time: new Date().toLocaleTimeString(),
         },
       ]);
-
-      void persistVoiceTranscript({
-        userId: state.user?.uid,
-        topic: dashboardContext.topic,
-        query,
-        reply: fallbackResponse,
-        provider: 'fallback',
-        model: 'local-canned',
-        mode: 'chat_browser_fallback',
-      }).catch((persistError) => {
-        console.warn('[Firebase] Failed to persist local fallback transcript', { persistError });
-      });
-
-      console.warn('[VoiceAI Debug] Fallback reply used', error);
+      console.warn('[VoiceAI Debug] Smart chat request failed after retry', error);
     } finally {
       setIsAiResponding(false);
       setRespondingTopic('');

@@ -10,7 +10,7 @@ import { Link } from 'react-router-dom';
 import AlertInsightModal from '../components/AlertInsightModal.tsx';
 import CityHeatmapMap from '../components/CityHeatmapMap';
 import type { Alert } from '../types';
-import { CITY_COORDS, CITY_OPTIONS, getCityFromLocation, normalizeCityScope } from '../config/cities';
+import { CITY_COORDS, CITY_OPTIONS, CITY_SELECTION_OPTIONS, OVERALL_CITY_OPTION, getCityFromLocation, normalizeCityScope, isOverallCitySelection, type CityScope } from '../config/cities';
 
 const COLORS = {
   HIGH: '#ef4444',
@@ -149,20 +149,26 @@ const CustomTooltipTheme = ({ active, payload, label }: any) => {
 
 export default function CommandCenterPage() {
   const { alerts, dashboardStats, isCollecting, triggerCollect, selectedCity, setSelectedCity } = useAppStore();
-  const activeCity = normalizeCityScope(selectedCity) ?? CITY_OPTIONS[0];
+  const normalizedSelectedCity = normalizeCityScope(selectedCity);
+  const isOverallScope = isOverallCitySelection(selectedCity);
+  const activeCity = normalizedSelectedCity ?? CITY_OPTIONS[0];
+  const scopeDisplayName = isOverallScope ? 'All Cities' : activeCity;
+  const mapFallbackCity: CityScope = normalizedSelectedCity ?? CITY_OPTIONS[0];
   const [activeSection, setActiveSection] = useState<HomeSection>('Overview');
   const [selectedReportIndex, setSelectedReportIndex] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!normalizeCityScope(selectedCity)) {
+    if (!isOverallCitySelection(selectedCity) && !normalizeCityScope(selectedCity)) {
       setSelectedCity(CITY_OPTIONS[0]);
     }
   }, [selectedCity, setSelectedCity]);
 
-  const cityAlerts = useMemo(
-    () => alerts.filter((alert) => getCityFromLocation(alert.location) === activeCity),
-    [alerts, activeCity],
-  );
+  const cityAlerts = useMemo(() => {
+    if (isOverallScope) {
+      return alerts;
+    }
+    return alerts.filter((alert) => getCityFromLocation(alert.location) === activeCity);
+  }, [alerts, activeCity, isOverallScope]);
 
   const scopedStats = useMemo(() => computeScopedStats(cityAlerts), [cityAlerts]);
   const riskTrends = useMemo(() => buildRiskTrendsFromAlerts(cityAlerts), [cityAlerts]);
@@ -236,26 +242,26 @@ export default function CommandCenterPage() {
     for (const alert of alerts) {
       if (alert.status !== 'ACTIVE') continue;
 
-        const city = getCityFromLocation(alert.location) ?? activeCity;
-        const base = CITY_COORDS[city] || CITY_COORDS[activeCity];
-        if (!base) continue;
+      const city = getCityFromLocation(alert.location) ?? mapFallbackCity;
+      const base = CITY_COORDS[city] || CITY_COORDS[mapFallbackCity];
+      if (!base) continue;
 
-        const jitter = getPointJitter(`${alert.id}-map-dot`);
-        points.push({
-          id: alert.id,
-          city,
-          lat: base.lat + jitter.lat,
-          lng: base.lng + jitter.lng,
-          title: alert.title,
-          riskLevel: alert.riskLevel,
-          confidence: alert.confidence,
-          escalationProbability: alert.escalationProbability,
-          updatedAt: alert.updatedAt,
-        });
-      }
+      const jitter = getPointJitter(`${alert.id}-map-dot`);
+      points.push({
+        id: alert.id,
+        city,
+        lat: base.lat + jitter.lat,
+        lng: base.lng + jitter.lng,
+        title: alert.title,
+        riskLevel: alert.riskLevel,
+        confidence: alert.confidence,
+        escalationProbability: alert.escalationProbability,
+        updatedAt: alert.updatedAt,
+      });
+    }
 
     return points.slice(0, 160);
-  }, [activeCity, alerts]);
+  }, [alerts, mapFallbackCity]);
 
   const heatPoints = useMemo<Array<[number, number, number]>>(() => {
     const points: Array<[number, number, number]> = [];
@@ -266,8 +272,8 @@ export default function CommandCenterPage() {
     });
 
     cityAlerts.forEach((alert) => {
-      const normalizedCity = getCityFromLocation(alert.location) ?? activeCity;
-      const base = CITY_COORDS[normalizedCity] || CITY_COORDS[activeCity];
+      const normalizedCity = getCityFromLocation(alert.location) ?? mapFallbackCity;
+      const base = CITY_COORDS[normalizedCity] || CITY_COORDS[mapFallbackCity];
       if (!base) return;
 
       const jitter = getPointJitter(alert.id);
@@ -281,7 +287,7 @@ export default function CommandCenterPage() {
     });
 
     return points;
-  }, [cityHeatStats, cityAlerts, activeCity]);
+  }, [cityHeatStats, cityAlerts, mapFallbackCity]);
 
   useEffect(() => {
     if (reportAlerts.length === 0) {
@@ -336,7 +342,7 @@ export default function CommandCenterPage() {
     if (highRiskAlerts.length >= 3) {
       next.push({
         priority: 'CRITICAL',
-        title: `Escalation pressure is high in ${activeCity}`,
+        title: `Escalation pressure is high in ${scopeDisplayName}`,
         reason: `${highRiskAlerts.length} high-risk active alerts are currently open, increasing short-term disruption probability.`,
         action: 'Open highest-priority report, assign rapid response owner, and initiate 2-hour review cycle.',
         metric: `${highRiskAlerts.length} high-risk alerts`,
@@ -410,7 +416,7 @@ export default function CommandCenterPage() {
     scopedStats.avgConfidence,
     scopedStats.resolvedToday,
     scopedStats.topLocation,
-    activeCity,
+    scopeDisplayName,
   ]);
 
   const sectionDescription: Record<HomeSection, string> = {
@@ -425,7 +431,7 @@ export default function CommandCenterPage() {
         <div className="page-header" style={{ margin: 0 }}>
           <div className="page-title">Command Center</div>
           <div className="page-desc">
-            {activeCity} intelligence overview · 5-city scope · Updated {format(dashboardStats.lastUpdated, 'HH:mm:ss')}
+            {scopeDisplayName} intelligence overview · {isOverallScope ? 'all-city scope' : '5-city scope'} · Updated {format(dashboardStats.lastUpdated, 'HH:mm:ss')}
           </div>
         </div>
         <div className="home-toolbar-row">
@@ -434,10 +440,10 @@ export default function CommandCenterPage() {
             <select
               id="city-filter"
               className="city-filter-select"
-              value={activeCity}
+              value={isOverallScope ? OVERALL_CITY_OPTION : activeCity}
               onChange={(event) => setSelectedCity(event.target.value)}
             >
-              {CITY_OPTIONS.map((city) => (
+              {CITY_SELECTION_OPTIONS.map((city) => (
                 <option key={city} value={city}>{city}</option>
               ))}
             </select>
@@ -474,7 +480,7 @@ export default function CommandCenterPage() {
           <div className="curved-report-box" id="home-critical-reports">
             <div className="flex items-center justify-between mb-16">
               <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.8px', color: 'var(--text-muted)' }}>
-                🔴 Top Critical Alerts · {selectedCity || 'City'}
+                🔴 Top Critical Alerts · {scopeDisplayName}
               </div>
               <Link to="/alerts" style={{ fontSize: 11, color: 'var(--text-accent)', textDecoration: 'none' }}>View all →</Link>
             </div>
@@ -482,7 +488,7 @@ export default function CommandCenterPage() {
             {reportAlerts.length === 0 ? (
               <div className="empty-state" style={{ padding: '34px 20px' }}>
                 <div className="empty-state-icon">✅</div>
-                <div className="empty-state-text">No active alerts available for {activeCity}</div>
+                <div className="empty-state-text">No active alerts available for {scopeDisplayName}</div>
               </div>
             ) : (
               <div className="report-list">
@@ -519,7 +525,7 @@ export default function CommandCenterPage() {
 
               {activeAlerts.length === 0 && (
                 <div className="latest-report-item">
-                  <div className="latest-report-title">No active report feed for {selectedCity}</div>
+                  <div className="latest-report-title">No active report feed for {scopeDisplayName}</div>
                   <div className="latest-report-sub">Try collecting intelligence or select another city</div>
                 </div>
               )}
@@ -592,7 +598,7 @@ export default function CommandCenterPage() {
 
           <div className="mt-20">
             <CityHeatmapMap
-              selectedCity={activeCity}
+              selectedCity={isOverallScope ? OVERALL_CITY_OPTION : activeCity}
               updatedAt={dashboardStats.lastUpdated}
               cityStats={cityHeatStats}
               heatPoints={heatPoints}
@@ -602,7 +608,7 @@ export default function CommandCenterPage() {
           </div>
 
           <div className="chart-card mt-20">
-            <div className="chart-title">⚡ Risk Level Trends — {activeCity} (Last 24 Hours)</div>
+            <div className="chart-title">⚡ Risk Level Trends — {scopeDisplayName} (Last 24 Hours)</div>
             <ResponsiveContainer width="100%" height={220}>
               <AreaChart data={riskTrends} margin={{ top: 5, right: 10, bottom: 5, left: -20 }}>
                 <defs>
@@ -633,7 +639,7 @@ export default function CommandCenterPage() {
 
           <div className="grid-2 mt-20">
             <div className="chart-card">
-              <div className="chart-title">📂 Event Distribution — {activeCity}</div>
+              <div className="chart-title">📂 Event Distribution — {scopeDisplayName}</div>
               <ResponsiveContainer width="100%" height={200}>
                 <PieChart>
                   <Pie
@@ -655,7 +661,7 @@ export default function CommandCenterPage() {
             </div>
 
             <div className="chart-card">
-              <div className="chart-title">📊 Hourly Incident Volume — {activeCity}</div>
+              <div className="chart-title">📊 Hourly Incident Volume — {scopeDisplayName}</div>
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={riskTrends.slice(-12)} margin={{ top: 5, right: 10, bottom: 5, left: -20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />

@@ -11,14 +11,6 @@ try:
 except Exception:
     genai = None
 
-try:
-    from langchain_ollama import OllamaLLM as LangChainOllama
-except Exception:
-    try:
-        from langchain_community.llms import Ollama as LangChainOllama
-    except Exception:
-        LangChainOllama = None
-
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +37,7 @@ class VoiceAssistantService:
             "provider": "fallback",
             "mode": "chat_fallback" if mode == "chat" else "voice_fallback",
             "model": "deterministic",
-            "reason": f"gemini={gemini_meta.get('reason', 'unknown')};ollama=disabled_for_assistant",
+            "reason": f"gemini={gemini_meta.get('reason', 'unknown')};gemini_only_voice_chat=true",
         }
 
     def _ask_with_gemini(self, query: str, prompt: str, assistant_mode: str) -> tuple[str | None, dict[str, str]]:
@@ -80,48 +72,6 @@ class VoiceAssistantService:
             "reason": "gemini_voice_error",
             "model_errors": " | ".join(model_errors[:2]),
         }
-
-    def _ask_with_ollama(self, query: str, prompt: str, assistant_mode: str) -> tuple[str | None, dict[str, str]]:
-        if not self.settings.ollama_enabled:
-            return None, {"reason": "ollama_disabled"}
-        if not self.settings.ollama_base_url:
-            return None, {"reason": "missing_ollama_base_url"}
-        if LangChainOllama is None:
-            return None, {"reason": "langchain_ollama_missing"}
-
-        is_chat = assistant_mode == "chat"
-        model_name = self.settings.ollama_llama_model if is_chat else self.settings.ollama_mistral_model
-        num_predict = 420 if is_chat else 220
-        temperature = 0.35 if is_chat else 0.2
-        try:
-            try:
-                client = LangChainOllama(
-                    model=model_name,
-                    base_url=self.settings.ollama_base_url,
-                    temperature=temperature,
-                    num_predict=num_predict,
-                    timeout=self.settings.ollama_request_timeout_seconds,
-                )
-            except TypeError:
-                client = LangChainOllama(
-                    model=model_name,
-                    base_url=self.settings.ollama_base_url,
-                    temperature=temperature,
-                    num_predict=num_predict,
-                )
-
-            text = str(client.invoke(prompt)).strip()
-            if text:
-                mode_name = "ollama_smart_chat" if is_chat else "ollama_voice_fallback"
-                return text, {
-                    "provider": "ollama",
-                    "mode": mode_name,
-                    "model": model_name,
-                }
-            return None, {"reason": "ollama_empty_response"}
-        except Exception as exc:
-            logger.warning("Ollama voice fallback failed query=%s error=%s", query, exc)
-            return None, {"reason": "ollama_runtime_error", "model_errors": str(exc)[:200]}
 
     def _gemini_candidates(self) -> list[str]:
         configured = (self.settings.gemini_live_model or "").strip()

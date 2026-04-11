@@ -1,6 +1,10 @@
 export const CITY_OPTIONS = ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai'] as const;
+export const OVERALL_CITY_OPTION = 'Overall' as const;
 
 export type CityScope = (typeof CITY_OPTIONS)[number];
+export type CitySelection = CityScope | typeof OVERALL_CITY_OPTION;
+
+export const CITY_SELECTION_OPTIONS: readonly CitySelection[] = [OVERALL_CITY_OPTION, ...CITY_OPTIONS];
 
 export const CITY_COORDS: Record<CityScope, { lat: number; lng: number }> = {
   Mumbai: { lat: 19.076, lng: 72.8777 },
@@ -27,6 +31,10 @@ const CITY_ALIAS_TO_SCOPE: Record<string, CityScope> = {
 export function normalizeCityScope(value: string | null | undefined): CityScope | null {
   if (!value) return null;
   return CITY_ALIAS_TO_SCOPE[value.trim().toLowerCase()] ?? null;
+}
+
+export function isOverallCitySelection(value: string | null | undefined): boolean {
+  return (value ?? '').trim().toLowerCase() === OVERALL_CITY_OPTION.toLowerCase();
 }
 
 export function getCityFromLocation(location: string): CityScope | null {

@@ -79,7 +79,7 @@ export interface UIRunResult {
 
 export interface VoiceAssistantResult {
   reply: string;
-  provider: 'gemini' | 'ollama' | 'fallback';
+  provider: 'gemini' | 'fallback';
   model: string;
   mode: string;
   generatedAt: Date;
@@ -433,7 +433,7 @@ export async function askVoiceAssistant(
 
   const json = (await response.json()) as {
     reply: string;
-    provider: 'gemini' | 'ollama' | 'fallback';
+    provider: 'gemini' | 'fallback';
     model: string;
     mode: string;
     generated_at: string;

@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
 import { format } from 'date-fns';
+import { OVERALL_CITY_OPTION, isOverallCitySelection } from '../config/cities';
 
 interface CityHeatStat {
   city: string;
@@ -68,6 +69,7 @@ export default function CityHeatmapMap({
   const heatLayerRef = useRef<L.Layer | null>(null);
   const onCitySelectRef = useRef<((city: string) => void) | undefined>(onCitySelect);
   const [hoveredCity, setHoveredCity] = useState<CityHeatStat | null>(null);
+  const isOverallScope = isOverallCitySelection(selectedCity);
 
   const selectedStat = useMemo(
     () => cityStats.find((item) => item.city === selectedCity) ?? null,
@@ -214,7 +216,14 @@ export default function CityHeatmapMap({
     markerLayer.addTo(map);
     markerLayerRef.current = markerLayer;
 
-    if (selectedStat) {
+    if (isOverallScope) {
+      if (cityStats.length > 1) {
+        const bounds = L.latLngBounds(cityStats.map((stat) => [stat.lat, stat.lng] as [number, number]));
+        map.fitBounds(bounds.pad(0.25), { animate: false });
+      } else {
+        map.setView(INDIA_CENTER, 5, { animate: false });
+      }
+    } else if (selectedStat) {
       map.setView([selectedStat.lat, selectedStat.lng], 6, { animate: false });
     } else if (cityStats.length > 1) {
       const bounds = L.latLngBounds(cityStats.map((stat) => [stat.lat, stat.lng] as [number, number]));
@@ -222,7 +231,7 @@ export default function CityHeatmapMap({
     } else {
       map.setView(INDIA_CENTER, 5, { animate: false });
     }
-  }, [alertPoints, cityStats, heatPoints, selectedCity, selectedStat]);
+  }, [alertPoints, cityStats, heatPoints, selectedCity, selectedStat, isOverallScope]);
 
   return (
     <div className="city-heatmap-card">
@@ -253,7 +262,7 @@ export default function CityHeatmapMap({
       )}
 
       <div className="city-heatmap-legend">
-        <span><strong>Selected:</strong> {selectedCity || 'N/A'}</span>
+        <span><strong>Selected:</strong> {isOverallScope ? OVERALL_CITY_OPTION : (selectedCity || 'N/A')}</span>
         <span><strong>Heat:</strong> green low · red high activity</span>
         <span><strong>Dots:</strong> active alerts by risk level</span>
         <span><strong>Click marker:</strong> switch city view</span>

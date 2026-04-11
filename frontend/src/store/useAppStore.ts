@@ -4,7 +4,7 @@ import type { Alert, AlertStatus, DashboardStats, FilterType, PipelineStage, Ris
 import { generateMockAlerts, generateMockAuditLogs, generateMockPipelineStages } from '../services/mockData';
 import { runTopic, streamTopic, type UIRunResult } from '../services/realtimeApi';
 import { persistAlertUpdates, persistDashboardSnapshot, persistPipelineRun } from '../services/firebaseDataService';
-import { CITY_OPTIONS, normalizeCityScope, type CityScope } from '../config/cities';
+import { CITY_OPTIONS, OVERALL_CITY_OPTION, normalizeCityScope, isOverallCitySelection, type CityScope } from '../config/cities';
 
 type PipelineModelMode = 'unknown' | 'ollama' | 'gemini' | 'fallback';
 
@@ -291,11 +291,14 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
 
   triggerCollect: async () => {
     set({ isCollecting: true });
-    const city = normalizeCityScope(get().selectedCity) ?? CITY_OPTIONS[0];
-    const topic = buildCityTopic(pickTopic(get().searchQuery, get().voiceQuery), city);
+    const selectedCity = get().selectedCity;
+    const city = normalizeCityScope(selectedCity);
+    const topic = city
+      ? buildCityTopic(pickTopic(get().searchQuery, get().voiceQuery), city)
+      : pickTopic(get().searchQuery, get().voiceQuery);
 
     try {
-      const result = await runTopic(topic, 20, city);
+      const result = await runTopic(topic, 20, city ?? undefined);
       const mode = normalizePipelineMode(result.meta?.mode);
       if (modelConfigured(mode)) {
         console.info('[AI Debug] triggerCollect succeeded with AI mode', {
@@ -352,7 +355,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
         }),
         persistDashboardSnapshot({
           userId: stateAfter.user?.uid,
-          city,
+          city: city ?? (isOverallCitySelection(selectedCity) ? OVERALL_CITY_OPTION : selectedCity),
           topic: result.topic,
           modelMode: mode,
           modelName,
@@ -533,8 +536,11 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
   },
 
   runPipeline: async () => {
-    const city = normalizeCityScope(get().selectedCity) ?? CITY_OPTIONS[0];
-    const topic = buildCityTopic(pickTopic(get().searchQuery, get().voiceQuery), city);
+    const selectedCity = get().selectedCity;
+    const city = normalizeCityScope(selectedCity);
+    const topic = city
+      ? buildCityTopic(pickTopic(get().searchQuery, get().voiceQuery), city)
+      : pickTopic(get().searchQuery, get().voiceQuery);
     set({
       isPipelineRunning: true,
       lastTopic: topic,
@@ -645,7 +651,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
             }),
             persistDashboardSnapshot({
               userId: stateAfter.user?.uid,
-              city,
+              city: city ?? (isOverallCitySelection(selectedCity) ? OVERALL_CITY_OPTION : selectedCity),
               topic: result.topic,
               modelMode: mode,
               modelName: model,
@@ -672,7 +678,7 @@ export const useAppStore = create<AppState>()(persist((set, get) => ({
           close();
           finish();
         },
-      }, city);
+      }, city ?? undefined);
     });
   },
 }), {
