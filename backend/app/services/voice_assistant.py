@@ -26,13 +26,14 @@ class VoiceAssistantService:
         assistant_mode: str = "voice",
     ) -> tuple[str, dict[str, str]]:
         mode = "chat" if assistant_mode == "chat" else "voice"
-        prompt = self._build_prompt(query=query, dashboard_context=dashboard_context, assistant_mode=mode)
+        filtered_context = self._filtered_dashboard_context(dashboard_context)
+        prompt = self._build_prompt(query=query, dashboard_context=filtered_context, assistant_mode=mode)
 
         gemini_text, gemini_meta = self._ask_with_gemini(query=query, prompt=prompt, assistant_mode=mode)
         if gemini_text:
             return gemini_text, gemini_meta
 
-        fallback = self._fallback_reply(query=query, dashboard_context=dashboard_context, assistant_mode=mode)
+        fallback = self._fallback_reply(query=query, dashboard_context=filtered_context, assistant_mode=mode)
         return fallback, {
             "provider": "fallback",
             "mode": "chat_fallback" if mode == "chat" else "voice_fallback",
@@ -88,8 +89,32 @@ class VoiceAssistantService:
                 out.append(name)
         return out
 
+    @staticmethod
+    def _filtered_dashboard_context(dashboard_context: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(dashboard_context, dict):
+            return {}
+
+        filtered: dict[str, Any] = {}
+        for key in (
+            "topic",
+            "city",
+            "stats",
+            "topAlerts",
+            "recentAlerts",
+            "categoryBreakdown",
+            "locationBreakdown",
+            "latestReportSnippet",
+            "conversation",
+        ):
+            value = dashboard_context.get(key)
+            if value is not None:
+                filtered[key] = value
+
+        return filtered
+
     def _build_prompt(self, query: str, dashboard_context: dict[str, Any], assistant_mode: str) -> str:
-        context_json = self._compact_context_json(dashboard_context)
+        filtered_context = self._filtered_dashboard_context(dashboard_context)
+        context_json = self._compact_context_json(filtered_context)
         if assistant_mode == "chat":
             return (
                 "You are Cyna Smart Chat Analyst for a public safety command dashboard. "
@@ -103,7 +128,8 @@ class VoiceAssistantService:
                 "3) Signal Flow Diagram: one ASCII flow line using arrows (for example A -> B -> C).\n"
                 "4) Recommended Actions: exactly 3 numbered actions.\n"
                 "Grounding rules:\n"
-                "- Base your answer on stats, topAlerts, recentAlerts, categoryBreakdown, locationBreakdown, pipelineStages, and latestReportSnippet when available.\n"
+                "- Base your answer on stats, topAlerts, recentAlerts, categoryBreakdown, locationBreakdown, and latestReportSnippet when available.\n"
+                "- Ignore pipeline, scheduler, model, and backend runtime state even if users ask about them.\n"
                 "- If recentAlerts exist, mention at least one specific alert id/title/location in the Situation section.\n"
                 "- If user asks for patterns, compare categoryBreakdown and locationBreakdown explicitly.\n"
                 "- If requested data is missing in context, clearly state what is missing instead of inventing facts.\n"
@@ -120,6 +146,8 @@ class VoiceAssistantService:
             "Response rules:\n"
             "- Keep under 90 words.\n"
             "- Use short, easy-to-speak sentences.\n"
+            "- Focus on dashboard stats and alert data only.\n"
+            "- Do not mention pipeline, scheduler, model, or backend runtime state.\n"
             "- Mention high/medium/low risk counts when available.\n"
             "- End with one direct action recommendation.\n"
             "- Plain text only.\n"
@@ -139,7 +167,8 @@ class VoiceAssistantService:
 
     @staticmethod
     def _fallback_reply(query: str, dashboard_context: dict[str, Any], assistant_mode: str) -> str:
-        stats = dashboard_context.get("stats", {}) if isinstance(dashboard_context, dict) else {}
+        safe_context = VoiceAssistantService._filtered_dashboard_context(dashboard_context)
+        stats = safe_context.get("stats", {}) if isinstance(safe_context, dict) else {}
         active = stats.get("activeAlerts", "unknown")
         high = stats.get("highRisk", "unknown")
         medium = stats.get("mediumRisk", "unknown")
@@ -153,13 +182,13 @@ class VoiceAssistantService:
                 f"Risk Snapshot: active={active}, high={high}, medium={medium}, low={low}; top pressure={top_location}.\n"
                 "Signal Flow Diagram: incoming query -> dashboard context scan -> risk snapshot -> action priority.\n"
                 "Recommended Actions:\n"
-                "1. Trigger one fresh pipeline run for updated evidence.\n"
-                "2. Prioritize response teams in the top pressure location.\n"
-                "3. Re-check high risk alerts for escalation signs in 10 minutes."
+                "1. Prioritize response teams in the top pressure location.\n"
+                "2. Verify the most recent high risk alert details with field units.\n"
+                "3. Re-check active alerts for escalation signs in 10 minutes."
             )
 
         return (
             f"Live voice model is temporarily unavailable. For your query '{query}', "
             f"current dashboard shows active={active}, high={high}, medium={medium}, low={low}, "
-            f"with top pressure at {top_location}. Recommend running a fresh pipeline cycle before escalation."
+            f"with top pressure at {top_location}. Prioritize checks on the highest risk active alerts now."
         )

@@ -99,12 +99,6 @@ export interface VoiceDashboardContext {
     avgConfidence: number;
     topLocation: string;
   };
-  pipeline: {
-    isRunning: boolean;
-    activeNode: string;
-    modelMode: string;
-    modelName: string;
-  };
   topAlerts: Array<{
     id: string;
     title: string;
@@ -138,13 +132,6 @@ export interface VoiceDashboardContext {
     total: number;
     active: number;
     highRisk: number;
-  }>;
-  pipelineStages?: Array<{
-    id: string;
-    name: string;
-    status: string;
-    itemsProcessed: number;
-    processingTime: number;
   }>;
   latestReportSnippet: string;
   conversation?: {

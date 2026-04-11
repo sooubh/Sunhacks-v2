@@ -152,14 +152,6 @@ function buildDashboardContext(
     .sort((a, b) => b.total - a.total)
     .slice(0, 6);
 
-  const pipelineStages = state.pipelineStages.slice(0, 5).map(stage => ({
-    id: stage.id,
-    name: stage.name,
-    status: stage.status,
-    itemsProcessed: stage.itemsProcessed,
-    processingTime: stage.processingTime,
-  }));
-
   return {
     topic,
     city: state.selectedCity,
@@ -172,17 +164,10 @@ function buildDashboardContext(
       avgConfidence: state.dashboardStats.avgConfidence,
       topLocation: state.dashboardStats.topLocation,
     },
-    pipeline: {
-      isRunning: state.isPipelineRunning,
-      activeNode: state.pipelineLiveNode,
-      modelMode: state.pipelineModelMode,
-      modelName: state.pipelineModelName,
-    },
     topAlerts,
     recentAlerts,
     categoryBreakdown,
     locationBreakdown,
-    pipelineStages,
     latestReportSnippet: flattenText(state.latestReport, 800),
     conversation,
   };

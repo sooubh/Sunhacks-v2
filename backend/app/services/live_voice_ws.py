@@ -265,12 +265,36 @@ class LiveVoiceWebSocketGateway:
         return deduped
 
     @staticmethod
+    def _filtered_dashboard_context(dashboard_context: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(dashboard_context, dict):
+            return {}
+
+        filtered: dict[str, Any] = {}
+        for key in (
+            "topic",
+            "city",
+            "stats",
+            "topAlerts",
+            "recentAlerts",
+            "categoryBreakdown",
+            "locationBreakdown",
+            "latestReportSnippet",
+            "conversation",
+        ):
+            value = dashboard_context.get(key)
+            if value is not None:
+                filtered[key] = value
+
+        return filtered
+
+    @staticmethod
     def _context_prompt(dashboard_context: dict[str, Any]) -> str:
-        if not dashboard_context:
+        filtered_context = LiveVoiceWebSocketGateway._filtered_dashboard_context(dashboard_context)
+        if not filtered_context:
             return ""
 
         try:
-            context_text = json.dumps(dashboard_context, ensure_ascii=True, default=str)
+            context_text = json.dumps(filtered_context, ensure_ascii=True, default=str)
         except Exception:
             context_text = "{}"
 
@@ -279,7 +303,9 @@ class LiveVoiceWebSocketGateway:
 
         return (
             "You are LEIS live voice command assistant. "
-            "Use the dashboard context to provide tactical, concise, real-time guidance. "
+            "Use only dashboard stats and alert data from the provided context. "
+            "Do not mention pipeline, scheduler, model, or backend runtime state. "
+            "Provide tactical, concise, real-time guidance. "
             "Keep responses under 80 words when possible. "
             "Always include one concrete action recommendation.\n\n"
             f"Dashboard context JSON: {context_text}"
