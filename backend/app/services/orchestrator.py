@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import logging
 import re
 from time import perf_counter
-from typing import Generator
+from typing import Any, Generator
+
+try:
+    from langchain_ollama import OllamaLLM as LangChainOllama
+except Exception:
+    try:
+        from langchain_community.llms import Ollama as LangChainOllama
+    except Exception:
+        LangChainOllama = None
 
 from ..cities import CityName, city_location, detect_city, normalize_city, scoped_topic
 from ..models import (
@@ -29,6 +39,9 @@ from .scoring import (
     recommended_actions,
     validity_label,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineOrchestrator:
@@ -101,7 +114,12 @@ class PipelineOrchestrator:
 
         predictor_start = perf_counter()
         yield "stage", emit_stage("predictor", status="RUNNING")
-        alerts = self._build_alerts(topic=topic, analyzed_items=analyzed_items, city=normalized_city)
+        refined_items, predictor_meta = self._apply_ai_predictor(
+            topic=topic,
+            analyzed_items=analyzed_items,
+            city=normalized_city,
+        )
+        alerts = self._build_alerts(topic=topic, analyzed_items=refined_items, city=normalized_city)
         predictor_ms = int((perf_counter() - predictor_start) * 1000)
         yield "stage", emit_stage(
             "predictor",
@@ -134,10 +152,220 @@ class PipelineOrchestrator:
                 "max_items": max_items,
                 "sources_collected": len(raw_signals),
                 "sources_after_cleaning": len(cleaned_signals),
+                **predictor_meta,
                 **report_meta,
             },
         )
         yield "result", result.model_dump(mode="json")
+
+    def _apply_ai_predictor(
+        self,
+        topic: str,
+        analyzed_items: list[dict],
+        city: CityName | None,
+    ) -> tuple[list[dict], dict[str, Any]]:
+        if not analyzed_items:
+            return analyzed_items, {
+                "predictor_mode": "rules",
+                "predictor_reason": "no_items",
+            }
+
+        settings = self.collector.settings
+        if not settings.ollama_enabled or not settings.ollama_base_url:
+            return analyzed_items, {
+                "predictor_mode": "rules",
+                "predictor_reason": "ollama_disabled",
+            }
+
+        if LangChainOllama is None:
+            return analyzed_items, {
+                "predictor_mode": "rules",
+                "predictor_reason": "langchain_ollama_missing",
+            }
+
+        route = "fast" if (settings.ollama_route or "").strip().lower() == "fast" else "deep"
+        model_name = settings.ollama_mistral_model if route == "fast" else settings.ollama_llama_model
+
+        try:
+            try:
+                predictor = LangChainOllama(
+                    model=model_name,
+                    base_url=settings.ollama_base_url,
+                    temperature=0.1,
+                    num_predict=220,
+                    timeout=settings.ollama_request_timeout_seconds,
+                )
+            except TypeError:
+                predictor = LangChainOllama(
+                    model=model_name,
+                    base_url=settings.ollama_base_url,
+                    temperature=0.1,
+                    num_predict=220,
+                )
+        except Exception as exc:
+            logger.warning("AI predictor init failed model=%s error=%s", model_name, exc)
+            return analyzed_items, {
+                "predictor_mode": "rules",
+                "predictor_reason": "predictor_init_failed",
+            }
+
+        refined_items = list(analyzed_items)
+        refined_count = 0
+        max_refine = min(len(refined_items), 6)
+
+        for idx in range(max_refine):
+            base_item = refined_items[idx]
+            prompt = self._predictor_prompt(topic=topic, item=base_item, city=city)
+
+            try:
+                raw_output = str(predictor.invoke(prompt)).strip()
+                payload = self._parse_predictor_json(raw_output)
+                if not payload:
+                    continue
+
+                refined_items[idx] = self._merge_predictor_item(base_item, payload, city)
+                refined_count += 1
+            except Exception as exc:
+                logger.warning(
+                    "AI predictor inference failed topic=%s model=%s item=%d error=%s",
+                    topic,
+                    model_name,
+                    idx + 1,
+                    exc,
+                )
+
+        mode = "ollama_ai" if refined_count > 0 else "rules"
+        reason = "ok" if refined_count > 0 else "ai_no_valid_output"
+
+        return refined_items, {
+            "predictor_mode": mode,
+            "predictor_reason": reason,
+            "predictor_model": model_name,
+            "predictor_route": route,
+            "predictor_refined_items": refined_count,
+            "predictor_attempted_items": max_refine,
+        }
+
+    @staticmethod
+    def _predictor_prompt(topic: str, item: dict, city: CityName | None) -> str:
+        signal: SourceSignal = item["signal"]
+        snippet = (signal.snippet or "")[:280]
+        city_scope = city or "none"
+        actions = "; ".join(item.get("actions", [])[:3])
+
+        return (
+            "You are an incident risk predictor for public safety. "
+            "Return ONLY one JSON object with keys: risk, confidence, escalation_probability, impact, category, sentiment, location, recommended_actions. "
+            "Use allowed values only.\n"
+            "Allowed enums: risk=LOW|MEDIUM|HIGH; impact=LOW|MEDIUM|HIGH|CRITICAL; "
+            "category=PROTEST|VIOLENCE|UNREST|ACCIDENT|SURVEILLANCE|UNKNOWN; sentiment=PANIC|AGGRESSION|NEUTRAL|TENSE.\n"
+            "confidence and escalation_probability must be integers 0..100. recommended_actions must be array of 3 concise strings. "
+            "No markdown and no explanation text.\n\n"
+            f"Topic: {topic}\n"
+            f"City scope: {city_scope}\n"
+            f"Signal title: {signal.title}\n"
+            f"Signal snippet: {snippet}\n"
+            f"Source: {signal.source_name} ({signal.domain})\n"
+            "Current heuristic baseline:\n"
+            f"risk={item.get('risk')}\n"
+            f"confidence={item.get('confidence')}\n"
+            f"escalation_probability={item.get('escalation')}\n"
+            f"category={item.get('category')}\n"
+            f"sentiment={item.get('sentiment')}\n"
+            f"impact={item.get('impact')}\n"
+            f"location={item.get('location')}\n"
+            f"actions={actions}\n"
+        )
+
+    @staticmethod
+    def _parse_predictor_json(text: str) -> dict[str, Any] | None:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end < 0 or end <= start:
+            return None
+
+        try:
+            payload = json.loads(text[start : end + 1])
+        except Exception:
+            return None
+
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    @staticmethod
+    def _coerce_percent(value: Any, default: int, minimum: int, maximum: int) -> int:
+        raw = value
+        if isinstance(raw, str):
+            raw = raw.strip().replace("%", "")
+
+        try:
+            parsed = int(round(float(raw)))
+        except Exception:
+            return default
+
+        return max(minimum, min(maximum, parsed))
+
+    @staticmethod
+    def _merge_predictor_item(base_item: dict, ai_payload: dict[str, Any], city: CityName | None) -> dict:
+        risk = str(ai_payload.get("risk", base_item.get("risk", "LOW"))).upper()
+        if risk not in {"LOW", "MEDIUM", "HIGH"}:
+            risk = str(base_item.get("risk", "LOW"))
+
+        confidence = PipelineOrchestrator._coerce_percent(
+            ai_payload.get("confidence"),
+            int(base_item.get("confidence", 50)),
+            10,
+            95,
+        )
+        escalation = PipelineOrchestrator._coerce_percent(
+            ai_payload.get("escalation_probability"),
+            int(base_item.get("escalation", 50)),
+            5,
+            99,
+        )
+
+        category = str(ai_payload.get("category", base_item.get("category", "UNKNOWN"))).upper()
+        if category not in {"PROTEST", "VIOLENCE", "UNREST", "ACCIDENT", "SURVEILLANCE", "UNKNOWN"}:
+            category = str(base_item.get("category", "UNKNOWN"))
+
+        sentiment = str(ai_payload.get("sentiment", base_item.get("sentiment", "NEUTRAL"))).upper()
+        if sentiment not in {"PANIC", "AGGRESSION", "NEUTRAL", "TENSE"}:
+            sentiment = str(base_item.get("sentiment", "NEUTRAL"))
+
+        impact = str(ai_payload.get("impact", base_item.get("impact", "LOW"))).upper()
+        if impact not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            impact = infer_impact(risk=risk, confidence=confidence)
+
+        location = str(ai_payload.get("location", base_item.get("location", "Unknown"))).strip()
+        if not location:
+            location = str(base_item.get("location", "Unknown"))
+        if location == "Unknown" and city is not None:
+            location = city_location(city)
+
+        actions_raw = ai_payload.get("recommended_actions")
+        actions: list[str] = []
+        if isinstance(actions_raw, list):
+            actions = [str(a).strip() for a in actions_raw if str(a).strip()]
+
+        if not actions:
+            actions = recommended_actions(category=category, risk=risk)
+
+        merged = dict(base_item)
+        merged.update(
+            {
+                "risk": risk,
+                "confidence": confidence,
+                "escalation": escalation,
+                "category": category,
+                "sentiment": sentiment,
+                "impact": impact,
+                "location": location,
+                "validity": validity_label(confidence),
+                "actions": list(dict.fromkeys(actions))[:5],
+            }
+        )
+        return merged
 
     @staticmethod
     def _initial_stages() -> list[PipelineStage]:

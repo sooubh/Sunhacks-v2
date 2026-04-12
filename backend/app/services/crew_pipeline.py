@@ -46,10 +46,22 @@ class CrewReporter:
         provider_order = self.settings.reasoning_provider_order()
         gemini_reason = "not_attempted"
         ollama_reason = "not_attempted"
+        crewai_reason = "not_attempted"
         gemini_model_errors = ""
         ollama_model_errors = ""
+        crewai_model_errors = ""
 
         for provider in provider_order:
+            if provider == "crewai":
+                crew_text, crew_meta = self._generate_with_crewai(topic=topic, alerts=alerts)
+                if crew_text:
+                    return crew_text, crew_meta
+                
+                crewai_reason = crew_meta.get("reason", "crewai_runtime_error")
+                crewai_model_errors = crew_meta.get("model_errors", "")
+                logger.warning("CrewAI provider failed or unavailable topic=%s", topic)
+                continue
+
             if provider == "ollama":
                 ollama_text, ollama_meta = self._generate_with_ollama(topic=topic, alerts=alerts, query=ollama_prompt)
                 if ollama_text:
@@ -64,7 +76,8 @@ class CrewReporter:
                 if crew_text:
                     return crew_text, crew_meta
                 
-                logger.warning("CrewAI provider failed or unavailable topic=%s", topic)
+                crewai_reason = crew_meta.get("reason", "crewai_runtime_error")
+                crewai_model_errors = crew_meta.get("model_errors", "")
                 continue
 
             if genai is None:
@@ -85,9 +98,10 @@ class CrewReporter:
             gemini_model_errors = gemini_meta.get("model_errors", "")
 
         logger.warning(
-            "All AI providers failed topic=%s provider_order=%s gemini_reason=%s ollama_reason=%s",
+            "All AI providers failed topic=%s provider_order=%s crewai_reason=%s gemini_reason=%s ollama_reason=%s",
             topic,
             "->".join(provider_order),
+            crewai_reason,
             gemini_reason,
             ollama_reason,
         )
@@ -96,9 +110,12 @@ class CrewReporter:
             "mode": "fallback",
             "reason": "all_ai_providers_failed",
             "provider_order": "->".join(provider_order),
+            "crewai_reason": crewai_reason,
             "gemini_reason": gemini_reason,
             "ollama_reason": ollama_reason,
         }
+        if crewai_model_errors:
+            fallback_meta["crewai_model_errors"] = crewai_model_errors
         if gemini_model_errors:
             fallback_meta["gemini_model_errors"] = gemini_model_errors
         if ollama_model_errors:

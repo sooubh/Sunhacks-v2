@@ -5,6 +5,7 @@ import { jsPDF } from 'jspdf';
 import type { Alert } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { CITY_COORDS, getCityFromLocation } from '../config/cities';
+import { askVoiceAssistant, type VoiceDashboardContext } from '../services/realtimeApi';
 
 interface AlertInsightModalProps {
   alert: Alert | null;
@@ -146,6 +147,71 @@ function buildWhatIfResponse(alert: Alert, query: string): string {
   ].join(' ');
 }
 
+function buildScenarioDashboardContext(alert: Alert): VoiceDashboardContext {
+  const city = getCityFromLocation(alert.location) ?? alert.location;
+  const isActive = alert.status === 'ACTIVE';
+  const highRisk = alert.riskLevel === 'HIGH' ? 1 : 0;
+  const mediumRisk = alert.riskLevel === 'MEDIUM' ? 1 : 0;
+  const lowRisk = alert.riskLevel === 'LOW' ? 1 : 0;
+
+  return {
+    topic: `${alert.category} scenario analysis`,
+    city,
+    stats: {
+      totalAlerts: 1,
+      activeAlerts: isActive ? 1 : 0,
+      highRisk,
+      mediumRisk,
+      lowRisk,
+      avgConfidence: alert.confidence,
+      topLocation: alert.location,
+    },
+    topAlerts: [
+      {
+        id: alert.id,
+        title: alert.title,
+        location: alert.location,
+        riskLevel: alert.riskLevel,
+        confidence: alert.confidence,
+        status: alert.status,
+      },
+    ],
+    recentAlerts: [
+      {
+        id: alert.id,
+        title: alert.title,
+        summary: alert.summary,
+        location: alert.location,
+        riskLevel: alert.riskLevel,
+        status: alert.status,
+        category: alert.category,
+        sentiment: alert.sentiment,
+        confidence: alert.confidence,
+        escalationProbability: alert.escalationProbability,
+        keywords: (alert.keywords || []).slice(0, 8),
+        createdAt: alert.createdAt.toISOString(),
+      },
+    ],
+    categoryBreakdown: [
+      {
+        category: alert.category,
+        total: 1,
+        active: isActive ? 1 : 0,
+        highRisk,
+      },
+    ],
+    locationBreakdown: [
+      {
+        location: alert.location,
+        total: 1,
+        active: isActive ? 1 : 0,
+        highRisk,
+      },
+    ],
+    latestReportSnippet: `${alert.summary} ${alert.whyTriggered}`.trim(),
+  };
+}
+
 function buildMapEmbedUrl(lat: number, lng: number): string {
   const delta = 0.2;
   const left = lng - delta;
@@ -175,6 +241,7 @@ export default function AlertInsightModal({
   const [actionMessage, setActionMessage] = useState('');
   const [scenarioPrompt, setScenarioPrompt] = useState('');
   const [scenarioResult, setScenarioResult] = useState('');
+  const [scenarioLoading, setScenarioLoading] = useState(false);
   const [scenarioMessages, setScenarioMessages] = useState<ScenarioMessage[]>([
     {
       role: 'assistant',
@@ -498,28 +565,62 @@ export default function AlertInsightModal({
     setActionMessage('Alert reopened and moved to Active.');
   };
 
-  const runScenarioPredictor = () => {
+  const runScenarioPredictor = async () => {
     const prompt = scenarioPrompt.trim();
     if (!prompt) {
       setScenarioResult('Enter a what-if question to generate a scenario prediction.');
       return;
     }
 
-    const forecast = buildWhatIfResponse(alert, prompt);
-    setScenarioResult(forecast);
+    const askedAt = format(new Date(), 'HH:mm:ss');
     setScenarioMessages(prev => [
       ...prev,
       {
         role: 'user',
         text: prompt,
-        time: format(new Date(), 'HH:mm:ss'),
-      },
-      {
-        role: 'assistant',
-        text: forecast,
-        time: format(new Date(), 'HH:mm:ss'),
+        time: askedAt,
       },
     ]);
+
+    setScenarioPrompt('');
+    setScenarioLoading(true);
+    setScenarioResult('Generating AI scenario prediction...');
+
+    const aiQuery = [
+      `Scenario prediction request for alert ${alert.id}.`,
+      `What-if question: ${prompt}.`,
+      'Use only the provided alert context.',
+      'Return: projected escalation probability (0-100), risk outlook, next 6-24 hour impact window, and 3 recommended actions.',
+    ].join(' ');
+
+    try {
+      const aiResponse = await askVoiceAssistant(aiQuery, buildScenarioDashboardContext(alert), 'chat');
+      const forecast = aiResponse.reply?.trim() || buildWhatIfResponse(alert, prompt);
+      const answeredAt = format(new Date(), 'HH:mm:ss');
+      setScenarioResult(forecast);
+      setScenarioMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: forecast,
+          time: answeredAt,
+        },
+      ]);
+    } catch {
+      const forecast = buildWhatIfResponse(alert, prompt);
+      const answeredAt = format(new Date(), 'HH:mm:ss');
+      setScenarioResult(forecast);
+      setScenarioMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          text: forecast,
+          time: answeredAt,
+        },
+      ]);
+    } finally {
+      setScenarioLoading(false);
+    }
   };
 
   const modalContent = (
@@ -752,7 +853,9 @@ export default function AlertInsightModal({
               />
 
               <div className="scenario-actions-row">
-                <button className="btn btn-primary btn-sm" onClick={runScenarioPredictor}>Run Scenario</button>
+                <button className="btn btn-primary btn-sm" onClick={runScenarioPredictor} disabled={scenarioLoading}>
+                  {scenarioLoading ? 'Running AI...' : 'Run Scenario'}
+                </button>
                 <button
                   className="btn btn-ghost btn-sm"
                   onClick={() => {

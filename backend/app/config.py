@@ -100,8 +100,12 @@ class Settings:
 
         if mode in {"ollama_only", "local_only"}:
             return ("ollama",)
+        if mode == "crewai_only":
+            return ("crewai",)
+        if mode == "crewai_first":
+            return ("crewai", "gemini", "ollama")
         if mode == "gemini_first":
-            return ("gemini", "ollama")
+            return ("gemini", "ollama", "crewai")
         if mode == "gemini_only":
             return ("gemini",)
-        return ("ollama", "gemini")
+        return ("ollama", "gemini", "crewai")

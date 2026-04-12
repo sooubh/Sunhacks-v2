@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from .config import Settings
 from .models import TopicRequest, TopicResult, VoiceAssistantRequest, VoiceAssistantResponse
 from .services.collectors import OSINTCollector
+from .services import crew_pipeline
 from .services.crew_pipeline import CrewReporter
 from .services.live_voice_ws import LiveVoiceWebSocketGateway
 from .services.orchestrator import PipelineOrchestrator
@@ -61,6 +62,7 @@ def health() -> dict:
         "ai": {
             "gemini_enabled": bool(settings.gemini_api_key),
             "local_only": local_only,
+            "crewai_available": crew_pipeline.Agent is not None,
             "active_reasoning_providers": list(provider_order),
             "gemini_live_model": settings.gemini_live_model,
             "gemini_live_ws_enabled": bool(settings.gemini_api_key),
@@ -97,6 +99,7 @@ def list_sources() -> dict:
             "web_scraper": False,
             "gemini_llm": bool(settings.gemini_api_key) and not local_only,
             "ollama_llm": bool(settings.ollama_enabled and settings.ollama_base_url),
+            "crewai": crew_pipeline.Agent is not None,
             "local_only": local_only,
             "active_reasoning_providers": list(provider_order),
         },
@@ -109,7 +112,7 @@ def run_topic(payload: TopicRequest) -> TopicResult:
         result = orchestrator.run(topic=payload.topic, max_items=payload.max_items, city=payload.city)
         meta = result.meta or {}
         mode = str(meta.get("mode", "unknown"))
-        if mode in {"gemini", "ollama"}:
+        if mode in {"gemini", "ollama", "crewai"}:
             logger.info(
                 "topic analysis success topic=%s city=%s alerts=%d mode=%s model=%s",
                 payload.topic,
@@ -142,7 +145,7 @@ def voice_chat(payload: VoiceAssistantRequest) -> VoiceAssistantResponse:
             assistant_mode=payload.mode,
         )
         provider_raw = str(meta.get("provider", "fallback")).lower()
-        provider = provider_raw if provider_raw in {"gemini", "ollama", "fallback"} else "fallback"
+        provider = provider_raw if provider_raw in {"gemini", "ollama", "crewai", "fallback"} else "fallback"
         model = str(meta.get("model", "unknown"))
         mode = str(meta.get("mode", "voice_assistant"))
 
@@ -177,7 +180,7 @@ def stream_topic(
                 if event_name == "result":
                     meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
                     mode = str(meta.get("mode", "unknown")) if isinstance(meta, dict) else "unknown"
-                    if mode in {"gemini", "ollama"}:
+                    if mode in {"gemini", "ollama", "crewai"}:
                         logger.info(
                             "stream result success topic=%s city=%s mode=%s model=%s",
                             topic,
